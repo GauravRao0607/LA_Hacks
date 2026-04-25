@@ -1,99 +1,189 @@
-import { useEffect } from 'react'
-import { MapContainer, TileLayer, CircleMarker, useMap } from 'react-leaflet'
-import 'leaflet/dist/leaflet.css'
+import { useRef, useEffect } from 'react'
+import mapboxgl from 'mapbox-gl'
+import 'mapbox-gl/dist/mapbox-gl.css'
 import { MOCK_INCIDENTS, TIER_COLORS } from '../data/mockIncidents'
 import '../styles/Map.css'
 
-const TIER_GLOW = {
-  Critical: 'rgba(255, 59, 48, 0.25)',
-  Urgent: 'rgba(255, 149, 0, 0.2)',
-  Standard: 'rgba(255, 204, 0, 0.15)',
-}
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 
-function FlyToIncident({ selectedId }) {
-  const map = useMap()
-  useEffect(() => {
-    if (!selectedId) return
-    const incident = MOCK_INCIDENTS.find(i => i.id === selectedId)
-    if (incident) {
-      map.flyTo([incident.lat, incident.lng], 14, { duration: 0.8 })
-    }
-  }, [selectedId, map])
-  return null
-}
+const TIER_OPACITY = { Critical: 1.0, Urgent: 0.9, Standard: 0.8 }
 
 export default function ThreatMap({ selectedId, onSelectIncident }) {
-  return (
-    <div className="map-container">
-      <MapContainer
-        center={[34.0522, -118.2437]}
-        zoom={11}
-        style={{ width: '100%', height: '100%' }}
-        zoomControl={false}
-      >
-        <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-          maxZoom={19}
-        />
+  const containerRef = useRef()
+  const mapRef = useRef()
+  const markersRef = useRef([])
 
-        <FlyToIncident selectedId={selectedId} />
+  useEffect(() => {
+    mapboxgl.accessToken = MAPBOX_TOKEN
 
-        {MOCK_INCIDENTS.map(incident => {
-          const isSelected = incident.id === selectedId
-          const color = TIER_COLORS[incident.tier]
+    const map = new mapboxgl.Map({
+      container: containerRef.current,
+      // Satellite + streets for Google Maps quality when zoomed in
+      style: 'mapbox://styles/mapbox/satellite-streets-v12',
+      center: [-95.37, 29.76],
+      zoom: 11,
+      projection: 'globe',     // <-- seamless globe → street transition
+      antialias: true,
+    })
 
-          return (
-            <div key={incident.id}>
-              {/* Outer glow ring */}
-              <CircleMarker
-                center={[incident.lat, incident.lng]}
-                radius={isSelected ? 32 : 24}
-                pathOptions={{
-                  color: 'transparent',
-                  fillColor: color,
-                  fillOpacity: isSelected ? 0.18 : 0.12,
-                  weight: 0,
-                }}
-                interactive={false}
-              />
+    mapRef.current = map
 
-              {/* Dashed pulse ring for Critical */}
-              {incident.tier === 'Critical' && (
-                <CircleMarker
-                  center={[incident.lat, incident.lng]}
-                  radius={isSelected ? 44 : 36}
-                  pathOptions={{
-                    color: color,
-                    fillColor: 'transparent',
-                    fillOpacity: 0,
-                    weight: 1,
-                    opacity: 0.4,
-                    dashArray: '4 4',
-                  }}
-                  interactive={false}
-                />
-              )}
+    map.addControl(new mapboxgl.NavigationControl(), 'bottom-right')
 
-              {/* Core dot — clickable */}
-              <CircleMarker
-                center={[incident.lat, incident.lng]}
-                radius={isSelected ? 10 : 7}
-                pathOptions={{
-                  color: color,
-                  fillColor: color,
-                  fillOpacity: 0.95,
-                  weight: isSelected ? 2.5 : 1.5,
-                  opacity: 1,
-                }}
-                eventHandlers={{
-                  click: () => onSelectIncident(incident),
-                }}
-              />
-            </div>
-          )
-        })}
-      </MapContainer>
-    </div>
-  )
+    map.on('style.load', () => {
+      // Globe atmosphere & star field
+      map.setFog({
+        color: 'rgb(8, 12, 30)',
+        'high-color': 'rgb(20, 40, 100)',
+        'horizon-blend': 0.04,
+        'space-color': 'rgb(2, 4, 18)',
+        'star-intensity': 0.85,
+      })
+
+      // Incident source
+      map.addSource('incidents', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: MOCK_INCIDENTS.map(inc => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [inc.lng, inc.lat] },
+            properties: {
+              id: inc.id,
+              tier: inc.tier,
+              type: inc.type,
+              description: inc.description,
+              address: inc.address,
+              score: inc.score,
+              timeAgo: inc.timeAgo,
+              color: TIER_COLORS[inc.tier],
+              opacity: TIER_OPACITY[inc.tier],
+            },
+          })),
+        },
+      })
+
+      // Outer glow halo
+      map.addLayer({
+        id: 'incidents-halo',
+        type: 'circle',
+        source: 'incidents',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'],
+            2, 8, 6, 18, 12, 28
+          ],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': 0.15,
+          'circle-blur': 1,
+        },
+      })
+
+      // Mid glow ring
+      map.addLayer({
+        id: 'incidents-glow',
+        type: 'circle',
+        source: 'incidents',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'],
+            2, 5, 6, 12, 12, 20
+          ],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': 0.3,
+          'circle-blur': 0.5,
+        },
+      })
+
+      // Core dot
+      map.addLayer({
+        id: 'incidents-core',
+        type: 'circle',
+        source: 'incidents',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'],
+            2, 3, 6, 7, 12, 12
+          ],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': ['get', 'opacity'],
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-opacity': 0.6,
+        },
+      })
+
+      // Pulse ring for Critical — animated via CSS
+      map.addLayer({
+        id: 'incidents-pulse',
+        type: 'circle',
+        source: 'incidents',
+        filter: ['==', ['get', 'tier'], 'Critical'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'],
+            2, 10, 6, 22, 12, 36
+          ],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': 0.12,
+          'circle-blur': 0.8,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': ['get', 'color'],
+          'circle-stroke-opacity': 0.5,
+        },
+      })
+
+      // Click handler
+      map.on('click', 'incidents-core', (e) => {
+        const props = e.features[0].properties
+        const incident = MOCK_INCIDENTS.find(i => i.id === props.id)
+        if (incident) onSelectIncident(incident)
+      })
+
+      map.on('mouseenter', 'incidents-core', () => {
+        map.getCanvas().style.cursor = 'pointer'
+      })
+      map.on('mouseleave', 'incidents-core', () => {
+        map.getCanvas().style.cursor = ''
+      })
+    })
+
+    const onResize = () => map.resize()
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      window.removeEventListener('resize', onResize)
+      map.remove()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Highlight selected incident
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+
+    if (selectedId) {
+      map.setPaintProperty('incidents-core', 'circle-stroke-width', [
+        'case', ['==', ['get', 'id'], selectedId], 3, 1.5
+      ])
+      map.setPaintProperty('incidents-core', 'circle-radius', [
+        'interpolate', ['linear'], ['zoom'],
+        2, ['case', ['==', ['get', 'id'], selectedId], 5, 3],
+        6, ['case', ['==', ['get', 'id'], selectedId], 10, 7],
+        12, ['case', ['==', ['get', 'id'], selectedId], 16, 12],
+      ])
+    }
+  }, [selectedId])
+
+  // Fly to selected incident
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !selectedId) return
+    const incident = MOCK_INCIDENTS.find(i => i.id === selectedId)
+    if (!incident) return
+    map.flyTo({
+      center: [incident.lng, incident.lat],
+      zoom: 14,
+      duration: 1800,
+      essential: true,
+    })
+  }, [selectedId])
+
+  return <div ref={containerRef} className="map-container" />
 }

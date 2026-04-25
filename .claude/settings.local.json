@@ -4,7 +4,16 @@
       "Bash(npm create:*)",
       "Bash(echo \"EXIT:$?\")",
       "Bash(npm install:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(gh repo *)",
+      "Bash(git push *)",
+      "Bash(curl *)",
+      "Bash(git config *)",
+      "Bash(git count-objects *)",
+      "Bash(ssh-keygen *)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(git remote *)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }

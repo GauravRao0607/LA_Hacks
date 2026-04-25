@@ -2,9 +2,9 @@
   position: relative;
   width: 100vw;
   height: 100vh;
-  background: #0A0A0F;
+  background: #07101F;
   overflow: hidden;
-  font-family: system-ui, -apple-system, 'Inter', sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   color: #fff;
 }
 
