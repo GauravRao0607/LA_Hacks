@@ -2,12 +2,8 @@ import {
   LifeBuoy, HeartPulse, Truck, Building2,
   UserSearch, Zap, AlertTriangle
 } from 'lucide-react'
-import { MOCK_INCIDENTS, TIER_COLORS } from '../data/mockIncidents'
+import { TIER_COLORS } from '../data/mockIncidents'
 import '../styles/Sidebar.css'
-
-const sorted = [...MOCK_INCIDENTS].sort((a, b) => b.score - a.score)
-const criticalCount = MOCK_INCIDENTS.filter(i => i.tier === 'Critical').length
-const urgentCount = MOCK_INCIDENTS.filter(i => i.tier === 'Urgent').length
 
 const TYPE_ICONS = {
   Rescue: LifeBuoy,
@@ -31,7 +27,11 @@ function getScoreBg(tier) {
   return map[tier] || 'rgba(255,255,255,0.08)'
 }
 
-export default function Sidebar({ selectedId, onSelect }) {
+export default function Sidebar({ incidents = [], selectedId, onSelect }) {
+  const sorted = incidents
+  const criticalCount = incidents.filter(i => i.tier === 'Critical').length
+  const urgentCount = incidents.filter(i => i.tier === 'Urgent').length
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -44,7 +44,7 @@ export default function Sidebar({ selectedId, onSelect }) {
         </div>
         <div className="stats-row">
           <div className="stat-card total">
-            <div className="stat-value">{MOCK_INCIDENTS.length}</div>
+            <div className="stat-value">{incidents.length}</div>
             <div className="stat-label">Total</div>
           </div>
           <div className="stat-card critical">
@@ -64,6 +64,16 @@ export default function Sidebar({ selectedId, onSelect }) {
       </div>
 
       <div className="incident-list">
+        {sorted.length === 0 && (
+          <div style={{
+            padding: '24px 16px',
+            color: 'rgba(255,255,255,0.4)',
+            fontSize: 13,
+            textAlign: 'center',
+          }}>
+            Waiting for calls…
+          </div>
+        )}
         {sorted.map((incident) => {
           const isSelected = selectedId === incident.id
           const tierColor = TIER_COLORS[incident.tier]
@@ -81,7 +91,14 @@ export default function Sidebar({ selectedId, onSelect }) {
                 <Icon size={14} />
               </div>
               <div className="incident-info">
-                <div className="incident-type">{incident.type}</div>
+                <div className="incident-type">
+                  {incident.type}
+                  {incident.call_count > 1 && (
+                    <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.6 }}>
+                      ×{incident.call_count}
+                    </span>
+                  )}
+                </div>
                 <div className="incident-address">{incident.address}</div>
               </div>
               <div className="incident-meta">

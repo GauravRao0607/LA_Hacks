@@ -1,0 +1,97 @@
+import { useState, useEffect } from 'react'
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+const TYPE_RULES = [
+  { match: ['gas leak', 'gas-leak'],         hazard: true,  type: 'Infrastructure' },
+  { match: ['cardiac', 'medical', 'stab', 'shoot', 'minor injury'], type: 'Medical' },
+  { match: ['structural collapse'],          type: 'Structural' },
+  { match: ['fire', 'flood'],                type: 'Rescue' },
+  { match: ['missing'],                      type: 'Missing Person' },
+  { match: ['evacuation'],                   type: 'Evacuation' },
+  { match: ['car accident', 'crash'],        type: 'Medical' },
+]
+
+function mapType(emergency_type, hazardsBlob) {
+  const e = (emergency_type || '').toLowerCase()
+  const h = (hazardsBlob || '').toLowerCase()
+  for (const r of TYPE_RULES) {
+    if (r.hazard && r.match.some(k => h.includes(k))) return r.type
+    if (!r.hazard && r.match.some(k => e.includes(k))) return r.type
+  }
+  return 'Rescue'
+}
+
+function timeAgo(iso) {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso).getTime()
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  return `${h}h ago`
+}
+
+function buildDescription(inc) {
+  const last = inc.calls?.length ? inc.calls[inc.calls.length - 1] : null
+  if (!last) return inc.primary_emergency_type
+  const parts = []
+  parts.push(`${last.emergency_type}.`)
+  if (last.num_people && last.num_people > 1) parts.push(`${last.num_people} people involved.`)
+  if (last.injuries && last.injuries !== 'none') parts.push(`Injuries: ${last.injuries}.`)
+  if (last.hazards && last.hazards !== 'none') parts.push(`Hazards: ${last.hazards}.`)
+  if (last.mobility && last.mobility !== 'mobile') parts.push(`Mobility: ${last.mobility}.`)
+  if (inc.call_count > 1) parts.push(`${inc.call_count} clustered calls.`)
+  return parts.join(' ')
+}
+
+function adapt(inc) {
+  const totalPeople = (inc.calls || []).reduce((s, c) => s + (c.num_people || 0), 0)
+  const hazardsBlob = (inc.calls || []).map(c => c.hazards || '').join(' ')
+  return {
+    ...inc,
+    type:        mapType(inc.primary_emergency_type, hazardsBlob),
+    address:     inc.location_label,
+    description: buildDescription(inc),
+    timeAgo:     timeAgo(inc.created_at),
+    people:      totalPeople || null,
+    lat:         inc.centroid_lat,
+    lng:         inc.centroid_lng,
+  }
+}
+
+export function useIncidents() {
+  const [incidents, setIncidents] = useState([])
+
+  useEffect(() => {
+    let es
+    let cancelled = false
+
+    const start = () => {
+      es = new EventSource(`${API_URL}/incidents/stream`)
+      es.onmessage = (e) => {
+        if (cancelled) return
+        try {
+          const data = JSON.parse(e.data)
+          setIncidents(data.map(adapt))
+        } catch (err) {
+          console.error('SSE parse error', err)
+        }
+      }
+      es.onerror = () => {
+        console.warn('[useIncidents] SSE error; browser will reconnect')
+      }
+    }
+
+    start()
+    return () => {
+      cancelled = true
+      if (es) es.close()
+    }
+  }, [])
+
+  return incidents
+}
+
+export { API_URL }

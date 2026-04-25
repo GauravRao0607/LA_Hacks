@@ -3,43 +3,40 @@ import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import ThreatMap from './components/Map'
 import IncidentDetail from './components/IncidentDetail'
+import { useIncidents } from './hooks/useIncidents'
 import './styles/App.css'
 
 export default function App() {
-  const [selectedIncident, setSelectedIncident] = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
+  const incidents = useIncidents()
+  const selectedIncident = incidents.find(i => i.id === selectedId) || null
 
-  const handleSelectIncident = useCallback((incident) => {
-    setSelectedIncident(prev =>
-      prev && prev.id === incident.id ? null : incident
-    )
+  const handleSelect = useCallback((incident) => {
+    setSelectedId(prev => (prev === incident.id ? null : incident.id))
   }, [])
 
-  const handleClose = useCallback(() => {
-    setSelectedIncident(null)
-  }, [])
+  const handleClose = useCallback(() => setSelectedId(null), [])
 
   return (
     <div className="app">
-      {/* Full-screen map sits behind everything */}
       <ThreatMap
-        selectedId={selectedIncident?.id ?? null}
-        onSelectIncident={handleSelectIncident}
+        incidents={incidents}
+        selectedId={selectedId}
+        onSelectIncident={handleSelect}
       />
 
-      {/* UI overlay */}
       <div className="app-layout">
         <TopBar />
         <div className="app-content">
           <Sidebar
-            selectedId={selectedIncident?.id ?? null}
-            onSelect={handleSelectIncident}
+            incidents={incidents}
+            selectedId={selectedId}
+            onSelect={handleSelect}
           />
-          {/* Spacer so map is visible */}
           <div style={{ flex: 1 }} />
         </div>
       </div>
 
-      {/* Incident detail panel */}
       {selectedIncident && (
         <IncidentDetail
           incident={selectedIncident}

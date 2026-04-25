@@ -3,3 +3,7 @@ dist/
 .env
 .env.local
 .env.*.local
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

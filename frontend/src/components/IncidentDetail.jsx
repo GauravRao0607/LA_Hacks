@@ -5,6 +5,7 @@ import {
   Radio, CheckCircle
 } from 'lucide-react'
 import { TIER_COLORS } from '../data/mockIncidents'
+import { API_URL } from '../hooks/useIncidents'
 import '../styles/IncidentDetail.css'
 
 const TYPE_ICONS = {
@@ -17,13 +18,15 @@ const TYPE_ICONS = {
 }
 
 const TYPE_BG = {
-  Rescue:          'rgba(56,189,248,0.1)',
-  Medical:         'rgba(244,63,94,0.1)',
-  Evacuation:      'rgba(251,191,36,0.08)',
-  Structural:      'rgba(148,163,184,0.08)',
-  'Missing Person':'rgba(249,115,22,0.1)',
-  Infrastructure:  'rgba(52,211,153,0.08)',
+  Rescue:           'rgba(56,189,248,0.1)',
+  Medical:          'rgba(244,63,94,0.1)',
+  Evacuation:       'rgba(251,191,36,0.08)',
+  Structural:       'rgba(148,163,184,0.08)',
+  'Missing Person': 'rgba(249,115,22,0.1)',
+  Infrastructure:   'rgba(52,211,153,0.08)',
 }
+
+const RESPONDER_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', rescue: 'Rescue' }
 
 export default function IncidentDetail({ incident, onClose }) {
   if (!incident) return null
@@ -31,6 +34,20 @@ export default function IncidentDetail({ incident, onClose }) {
   const tierColor = TIER_COLORS[incident.tier]
   const Icon = TYPE_ICONS[incident.type] || AlertTriangle
   const iconBg = TYPE_BG[incident.type] || 'rgba(255,255,255,0.05)'
+
+  async function handleResolve() {
+    try {
+      await fetch(`${API_URL}/incidents/${incident.id}`, { method: 'DELETE' })
+      onClose()
+    } catch (e) {
+      console.error('Resolve failed', e)
+    }
+  }
+
+  const responders = incident.required_responders || {}
+  const respList = Object.entries(responders).filter(([, v]) => v > 0)
+
+  const reportId = String(incident.id).slice(0, 8).toUpperCase()
 
   return (
     <div className="incident-detail-overlay">
@@ -72,10 +89,17 @@ export default function IncidentDetail({ incident, onClose }) {
               <div className="detail-field-value">{incident.timeAgo}</div>
             </div>
 
-            {incident.people != null && (
+            {incident.people != null && incident.people > 0 && (
               <div className="detail-field">
                 <div className="detail-field-label"><Users size={11} /> People</div>
                 <div className="detail-field-value">{incident.people}</div>
+              </div>
+            )}
+
+            {incident.call_count > 1 && (
+              <div className="detail-field">
+                <div className="detail-field-label"><Radio size={11} /> Calls</div>
+                <div className="detail-field-value">{incident.call_count} clustered</div>
               </div>
             )}
 
@@ -94,9 +118,38 @@ export default function IncidentDetail({ incident, onClose }) {
 
             <div className="detail-field">
               <div className="detail-field-label"><Hash size={11} /> Report ID</div>
-              <div className="detail-field-value mono">RPT-{String(incident.id).padStart(4, '0')}</div>
+              <div className="detail-field-value mono">RPT-{reportId}</div>
             </div>
           </div>
+
+          {respList.length > 0 && (
+            <>
+              <div className="detail-divider" />
+              <div style={{
+                marginBottom: 8,
+                fontSize: 11,
+                color: 'rgba(255,255,255,0.5)',
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+              }}>
+                Required Responders
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {respList.map(([k, v]) => (
+                  <div key={k} style={{
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'rgba(255,255,255,0.85)',
+                  }}>
+                    <span style={{ fontWeight: 600 }}>{v}</span> {RESPONDER_LABEL[k] || k}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           <div className="detail-divider" />
 
@@ -105,7 +158,7 @@ export default function IncidentDetail({ incident, onClose }) {
               <Radio size={13} />
               Dispatch
             </button>
-            <button className="action-btn resolve">
+            <button className="action-btn resolve" onClick={handleResolve}>
               <CheckCircle size={13} />
               Resolve
             </button>

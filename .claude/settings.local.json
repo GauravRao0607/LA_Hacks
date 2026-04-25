@@ -19,7 +19,19 @@
       "Bash(uvicorn main:app --reload --port 8000)",
       "Bash(echo \"Backend PID: $!\")",
       "Bash(npm run *)",
-      "Bash(echo \"Frontend PID: $!\")"
+      "Bash(echo \"Frontend PID: $!\")",
+      "Bash(git ls-tree *)",
+      "Bash(git mv *)",
+      "Bash(python3 -c \"import fastapi, uvicorn, httpx, dotenv, pydantic; print\\('deps ok'\\)\")",
+      "Bash(python3 -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(python3 *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python -c \"import fastapi, uvicorn, httpx, dotenv, pydantic; print\\('all deps ok'\\)\")",
+      "Bash(/Users/anshsinghal/Desktop/LA_Hacks_frontend/backend/.venv/bin/pip freeze *)",
+      "Bash(.venv/bin/uvicorn main:app *)",
+      "Bash(xargs kill *)",
+      "Bash(git check-ignore *)",
+      "Bash(git add *)"
     ]
   }
 }
