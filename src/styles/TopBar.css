@@ -1,0 +1,129 @@
+.topbar {
+  position: relative;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 20px;
+  background: rgba(10, 10, 20, 0.97);
+  border-bottom: 1px solid rgba(255, 59, 48, 0.25);
+  pointer-events: all;
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-logo {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: #fff;
+  text-transform: uppercase;
+}
+
+.topbar-logo span {
+  color: #FF3B30;
+}
+
+.topbar-separator {
+  width: 1px;
+  height: 20px;
+  background: rgba(255,255,255,0.15);
+  margin: 0 4px;
+}
+
+.topbar-subtitle {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #8B8FA8;
+  text-transform: uppercase;
+}
+
+.topbar-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.topbar-time {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.topbar-date {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: #8B8FA8;
+  text-transform: uppercase;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.queue-counter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: rgba(255, 59, 48, 0.12);
+  border: 1px solid rgba(255, 59, 48, 0.3);
+  border-radius: 4px;
+}
+
+.queue-counter-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: #8B8FA8;
+  text-transform: uppercase;
+}
+
+.queue-counter-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #FF3B30;
+}
+
+.operator-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: rgba(48, 209, 88, 0.08);
+  border: 1px solid rgba(48, 209, 88, 0.25);
+  border-radius: 4px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #30D158;
+  box-shadow: 0 0 6px #30D158;
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px #30D158; }
+  50% { opacity: 0.6; box-shadow: 0 0 12px #30D158; }
+}
+
+.operator-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: #30D158;
+  text-transform: uppercase;
+  font-weight: 600;
+}
