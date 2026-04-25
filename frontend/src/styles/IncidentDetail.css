@@ -260,6 +260,13 @@
   font-weight: 700;
 }
 
+.action-btn.dispatch.dispatched {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  cursor: default;
+  opacity: 0.7;
+}
+
 .action-btn.resolve {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.07);

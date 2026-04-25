@@ -19,7 +19,7 @@ const TYPE_ICONS = {
 
 const RESPONDER_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', rescue: 'Rescue' }
 
-export default function IncidentDetail({ incident, onClose }) {
+export default function IncidentDetail({ incident, onClose, onDispatch, dispatched }) {
   if (!incident) return null
 
   const tierColor = TIER_COLORS[incident.tier]
@@ -147,9 +147,13 @@ export default function IncidentDetail({ incident, onClose }) {
           <div className="detail-divider" />
 
           <div className="detail-actions">
-            <button className="action-btn dispatch">
+            <button
+              className={`action-btn dispatch ${dispatched ? 'dispatched' : ''}`}
+              onClick={() => onDispatch?.(incident)}
+              disabled={dispatched}
+            >
               <Radio size={12} />
-              Dispatch
+              {dispatched ? 'Dispatched' : 'Dispatch'}
             </button>
             <button className="action-btn resolve" onClick={handleResolve}>
               <CheckCircle size={12} />
