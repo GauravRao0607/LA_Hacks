@@ -26,7 +26,20 @@ except ImportError:
 
 load_dotenv()
 
+import db  # noqa: E402  (must come after load_dotenv so db.init_pool sees SUPABASE_DB_URL)
+
 app = FastAPI(title="CrisisLine AI Backend")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await db.init_pool()
+    await db.hydrate(calls, incidents)
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await db.close_pool()
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -636,6 +649,8 @@ def create_incident_for_call(call: dict) -> dict:
     incidents[iid] = incident
     call["incident_id"] = iid
     update_incident_aggregates(incident)
+    asyncio.create_task(db.save_call(call))
+    asyncio.create_task(db.save_incident(incident))
     return incident
 
 
@@ -644,6 +659,8 @@ def merge_call_into_incident(call: dict, incident_id: str) -> dict:
     incident["call_ids"].append(call["id"])
     call["incident_id"] = incident_id
     update_incident_aggregates(incident)
+    asyncio.create_task(db.save_call(call))
+    asyncio.create_task(db.save_incident(incident))
     return incident
 
 
@@ -903,11 +920,12 @@ async def stream_incidents():
 
 
 @app.delete("/incidents/{incident_id}", status_code=200)
-def resolve_incident(incident_id: str):
-    inc = incidents.get(incident_id)
+async def resolve_incident(incident_id: str):
+    inc = incidents.pop(incident_id, None)
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
-    inc["status"] = "resolved"
-    inc["updated_at"] = datetime.utcnow().isoformat()
+    for cid in inc.get("call_ids", []):
+        calls.pop(cid, None)
+    await db.delete_incident(incident_id)
     return {"detail": f"Incident {incident_id} resolved."}
 
