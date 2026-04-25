@@ -39,7 +39,7 @@ export default function ThreatMap({ incidents = [], selectedId, onSelectIncident
     const map = new mapboxgl.Map({
       container: containerRef.current,
       style: 'mapbox://styles/mapbox/satellite-streets-v12',
-      center: [-118.32, 34.07], // LA
+      center: [-95.37, 29.76], // Houston (matches mock incident locations)
       zoom: 10,
       projection: 'globe',
       antialias: true,

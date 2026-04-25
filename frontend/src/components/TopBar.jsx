@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
-import { CloudLightning, ShieldAlert, AlertTriangle, Radio } from 'lucide-react'
+import { CloudLightning, ShieldAlert, Radio, Network } from 'lucide-react'
 import '../styles/TopBar.css'
 
-export default function TopBar({ incidents = [] }) {
+export default function TopBar({ incidents = [], showGraph, onGraphToggle }) {
   const [time, setTime] = useState(new Date())
 
   useEffect(() => {
@@ -21,7 +21,7 @@ export default function TopBar({ incidents = [] }) {
     <div className="topbar">
       <div className="topbar-left">
         <div className="topbar-logo">
-          <CloudLightning size={15} className="topbar-logo-icon" />
+          <CloudLightning size={13} className="topbar-logo-icon" />
           <span className="logo-storm">Crisis</span>Line AI
         </div>
         <div className="topbar-separator" />
@@ -54,17 +54,27 @@ export default function TopBar({ incidents = [] }) {
       <div className="topbar-right">
         {critical > 0 && (
           <div className="stat-pill critical">
-            <ShieldAlert size={11} />
+            <ShieldAlert size={10} />
             <span>{critical} Critical</span>
           </div>
         )}
         <div className="stat-pill">
-          <Radio size={11} />
+          <Radio size={10} />
           <span>{total} Reports</span>
         </div>
+
+        <button
+          className={`graph-toggle-btn ${showGraph ? 'active' : ''}`}
+          onClick={onGraphToggle}
+          title="Knowledge Graph"
+        >
+          <Network size={13} />
+        </button>
+
+        <div className="topbar-separator" />
         <div className="system-status">
           <div className="status-dot" />
-          <span className="system-label">Online</span>
+          <span className="system-label">Live</span>
         </div>
       </div>
     </div>

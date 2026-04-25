@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { EventSourcePolyfill } from 'event-source-polyfill'
+import { MOCK_INCIDENTS } from '../data/mockIncidents'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -70,10 +71,18 @@ function adapt(inc) {
 
 export function useIncidents() {
   const [incidents, setIncidents] = useState([])
+  const gotRealData = useRef(false)
 
   useEffect(() => {
     let es
     let cancelled = false
+
+    // Fall back to mock data after 3s if stream hasn't delivered anything
+    const fallbackTimer = setTimeout(() => {
+      if (!cancelled && !gotRealData.current) {
+        setIncidents(MOCK_INCIDENTS)
+      }
+    }, 3000)
 
     const start = () => {
       es = new EventSourcePolyfill(`${API_URL}/incidents/stream`, {
@@ -84,7 +93,11 @@ export function useIncidents() {
         if (cancelled) return
         try {
           const data = JSON.parse(e.data)
-          setIncidents(data.map(adapt))
+          if (data.length > 0) {
+            gotRealData.current = true
+            clearTimeout(fallbackTimer)
+            setIncidents(data.map(adapt))
+          }
         } catch (err) {
           console.error('SSE parse error', err)
         }
@@ -97,6 +110,7 @@ export function useIncidents() {
     start()
     return () => {
       cancelled = true
+      clearTimeout(fallbackTimer)
       if (es) es.close()
     }
   }, [])

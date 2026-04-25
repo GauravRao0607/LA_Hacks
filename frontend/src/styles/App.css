@@ -14,10 +14,13 @@ html, body, #root {
   position: relative;
   width: 100vw;
   height: 100vh;
-  background: #07101F;
+  background: #000;
   overflow: hidden;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   color: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .app-layout {

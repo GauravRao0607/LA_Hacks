@@ -17,15 +17,6 @@ const TYPE_ICONS = {
   Infrastructure: Zap,
 }
 
-const TYPE_BG = {
-  Rescue:           'rgba(56,189,248,0.1)',
-  Medical:          'rgba(244,63,94,0.1)',
-  Evacuation:       'rgba(251,191,36,0.08)',
-  Structural:       'rgba(148,163,184,0.08)',
-  'Missing Person': 'rgba(249,115,22,0.1)',
-  Infrastructure:   'rgba(52,211,153,0.08)',
-}
-
 const RESPONDER_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', rescue: 'Rescue' }
 
 export default function IncidentDetail({ incident, onClose }) {
@@ -33,7 +24,6 @@ export default function IncidentDetail({ incident, onClose }) {
 
   const tierColor = TIER_COLORS[incident.tier]
   const Icon = TYPE_ICONS[incident.type] || AlertTriangle
-  const iconBg = TYPE_BG[incident.type] || 'rgba(255,255,255,0.05)'
 
   async function handleResolve() {
     try {
@@ -49,35 +39,31 @@ export default function IncidentDetail({ incident, onClose }) {
 
   const responders = incident.required_responders || {}
   const respList = Object.entries(responders).filter(([, v]) => v > 0)
-
   const reportId = String(incident.id).slice(0, 8).toUpperCase()
 
   return (
     <div className="incident-detail-overlay">
       <div className="incident-detail-card">
-        <div className="detail-header">
+        <div className="detail-header" style={{ '--tier-color': tierColor }}>
           <div className="detail-header-left">
-            <div className="detail-icon" style={{ background: iconBg, color: tierColor }}>
-              <Icon size={18} />
+            <div className="detail-icon" style={{ '--tier-color': tierColor }}>
+              <Icon size={16} />
             </div>
             <div className="detail-title-block">
               <div className="detail-type">{incident.type}</div>
-              <div
-                className="detail-tier-badge"
-                style={{ background: `${tierColor}18`, color: tierColor, border: `1px solid ${tierColor}44` }}
-              >
-                <span className="tier-dot-sm" style={{ background: tierColor, boxShadow: `0 0 4px ${tierColor}` }} />
+              <div className="detail-tier-badge" style={{ '--tier-color': tierColor }}>
+                <span className="tier-dot-sm" />
                 {incident.tier}
               </div>
             </div>
           </div>
           <button className="close-btn" onClick={onClose}>
-            <X size={14} />
+            <X size={12} />
           </button>
         </div>
 
         <div className="detail-body">
-          <div className="detail-description" style={{ '--tier': tierColor }}>
+          <div className="detail-description" style={{ '--tier': `${tierColor}40` }}>
             {incident.description}
           </div>
 
@@ -102,31 +88,31 @@ export default function IncidentDetail({ incident, onClose }) {
 
           <div className="detail-fields">
             <div className="detail-field">
-              <div className="detail-field-label"><MapPin size={11} /> Location</div>
+              <div className="detail-field-label"><MapPin size={10} /> Location</div>
               <div className="detail-field-value">{incident.address}</div>
             </div>
 
             <div className="detail-field">
-              <div className="detail-field-label"><Clock size={11} /> Reported</div>
+              <div className="detail-field-label"><Clock size={10} /> Reported</div>
               <div className="detail-field-value">{incident.timeAgo}</div>
             </div>
 
             {incident.people != null && incident.people > 0 && (
               <div className="detail-field">
-                <div className="detail-field-label"><Users size={11} /> People</div>
+                <div className="detail-field-label"><Users size={10} /> People</div>
                 <div className="detail-field-value">{incident.people}</div>
               </div>
             )}
 
             {incident.call_count > 1 && (
               <div className="detail-field">
-                <div className="detail-field-label"><Radio size={11} /> Calls</div>
+                <div className="detail-field-label"><Radio size={10} /> Calls</div>
                 <div className="detail-field-value">{incident.call_count} clustered</div>
               </div>
             )}
 
             <div className="detail-field">
-              <div className="detail-field-label"><TrendingUp size={11} /> Priority Score</div>
+              <div className="detail-field-label"><TrendingUp size={10} /> Priority</div>
               <div className="score-meter">
                 <div className="score-bar-track">
                   <div
@@ -139,7 +125,7 @@ export default function IncidentDetail({ incident, onClose }) {
             </div>
 
             <div className="detail-field">
-              <div className="detail-field-label"><Hash size={11} /> Report ID</div>
+              <div className="detail-field-label"><Hash size={10} /> Report</div>
               <div className="detail-field-value mono">RPT-{reportId}</div>
             </div>
           </div>
@@ -147,26 +133,11 @@ export default function IncidentDetail({ incident, onClose }) {
           {respList.length > 0 && (
             <>
               <div className="detail-divider" />
-              <div style={{
-                marginBottom: 8,
-                fontSize: 11,
-                color: 'rgba(255,255,255,0.5)',
-                textTransform: 'uppercase',
-                letterSpacing: 0.5,
-              }}>
-                Required Responders
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <div className="responders-label">Responders needed</div>
+              <div className="responders-list">
                 {respList.map(([k, v]) => (
-                  <div key={k} style={{
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    fontSize: 12,
-                    background: 'rgba(255,255,255,0.06)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    color: 'rgba(255,255,255,0.85)',
-                  }}>
-                    <span style={{ fontWeight: 600 }}>{v}</span> {RESPONDER_LABEL[k] || k}
+                  <div key={k} className="responder-chip">
+                    <strong>{v}</strong> {RESPONDER_LABEL[k] || k}
                   </div>
                 ))}
               </div>
@@ -177,11 +148,11 @@ export default function IncidentDetail({ incident, onClose }) {
 
           <div className="detail-actions">
             <button className="action-btn dispatch">
-              <Radio size={13} />
+              <Radio size={12} />
               Dispatch
             </button>
             <button className="action-btn resolve" onClick={handleResolve}>
-              <CheckCircle size={13} />
+              <CheckCircle size={12} />
               Resolve
             </button>
           </div>
