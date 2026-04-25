@@ -29,7 +29,8 @@ Caller → ElevenLabs Voice Agent (JP)
 
 **`backend/.env`**
 ```
-MAPBOX_ACCESS_TOKEN=       # for geocoding addresses
+GOOGLE_PLACES_API_KEY=     # primary geocoder — Google Places Text Search (New)
+MAPBOX_ACCESS_TOKEN=       # fallback geocoder
 ELEVENLABS_WEBHOOK_SECRET= # from ElevenLabs dashboard
 ANTHROPIC_API_KEY=         # optional — enables Claude address correction + smarter transcript parsing
 MLH_CODE=                  # hackathon code
@@ -94,12 +95,24 @@ Calls only cluster with other calls of the same family:
 - `Urgent` — score ≥ 40
 - `Standard` — below 40
 
-### Geocoding (`geocode`)
-Four strategies, tried in order:
-1. **Mapbox Geocoding v6** — direct query
-2. **Mapbox Search Box Suggest** — fuzzy matching, handles speech-to-text errors and partial street names
-3. **Strip house number** — retry with just the street name
-4. **Claude correction** — only runs if `ANTHROPIC_API_KEY` is set; asks Claude to correct a misheard address then retries
+### Address Resolution (`resolve_address`)
+Wraps two pipelines and returns `(lat, lng, canonical_address)`. The canonical address (when available) replaces the raw spoken transcript on the call so the map and sidebar show the corrected version.
+
+**Strategy 1 — Google Places Text Search (primary)** (`_google_places_resolve`)
+Single round-trip to `places.googleapis.com/v1/places:searchText` with the spoken text as `textQuery`, biased to a 50 km circle around downtown LA. Returns coordinates **and** a canonical `formattedAddress` in one call. Designed to handle:
+- Filler words ("near the music center")
+- Spelled-out numbers ("three fifty south grand")
+- STT mishearings (e.g. "Denev Drive" → "De Neve Dr" at UCLA)
+
+Requires `GOOGLE_PLACES_API_KEY`. Free Google Cloud credit ($200/mo) covers all hackathon-scale usage.
+
+**Strategy 2 — Mapbox fallback** (`geocode`), tried only if Google returns no result:
+1. Mapbox Geocoding v6 — direct query
+2. Mapbox Search Box Suggest — fuzzy matching
+3. Strip house number — retry with just the street name
+4. Claude correction — only if `ANTHROPIC_API_KEY` is set; asks Claude to correct a misheard address then retries Mapbox v6
+
+> **Important**: Backend uses `print(...)` for resolution logs. `main.py` calls `sys.stdout.reconfigure(line_buffering=True)` at startup so prints flush to `/tmp/lah-logs/backend.log` immediately. Without that line, `nohup`-redirected stdout block-buffers and you'd see no `[google]` / `[geocode/...]` log lines.
 
 ### Webhook Handling (`receive_call`)
 Handles two types of bodies on `POST /webhook/call`:

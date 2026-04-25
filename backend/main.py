@@ -3,9 +3,13 @@ import json
 import math
 import os
 import re
+import sys
 import uuid
 from datetime import datetime
 from typing import Any, Optional
+
+# Force line-buffered stdout so print() shows up in nohup-redirected logs
+sys.stdout.reconfigure(line_buffering=True)
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -355,6 +359,69 @@ async def correct_address_with_claude(address: str) -> str | None:
         return None
 
 
+# ── Google Places Text Search ─────────────────────────────────────────────────
+GOOGLE_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+
+# Bias text-search results toward LA county. Adjust if you change demo region.
+LA_CENTER = {"latitude": 34.0522, "longitude": -118.2437}
+LA_BIAS_RADIUS_M = 50_000  # Google caps locationBias circle radius at 50km
+
+
+async def _google_places_resolve(address: str) -> tuple[float | None, float | None, str | None]:
+    """
+    Resolve a spoken/messy address using Google Places Text Search (New).
+    Single round-trip — returns coords + canonical formatted address.
+    Designed to handle filler words ("near the music center"), spelled-out
+    numbers ("three fifty south grand"), and partial inputs.
+
+    Returns (lat, lng, formatted_address) or (None, None, None) on failure.
+    """
+    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    if not api_key or not address or not address.strip():
+        return None, None, None
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                GOOGLE_PLACES_TEXT_SEARCH_URL,
+                headers={
+                    "Content-Type":     "application/json",
+                    "X-Goog-Api-Key":   api_key,
+                    "X-Goog-FieldMask": "places.location,places.formattedAddress,places.displayName,places.id",
+                },
+                json={
+                    "textQuery":     address,
+                    "languageCode":  "en",
+                    "regionCode":    "us",
+                    "maxResultCount": 1,
+                    "locationBias": {
+                        "circle": {"center": LA_CENTER, "radius": LA_BIAS_RADIUS_M},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            places = resp.json().get("places", [])
+            if not places:
+                print(f"[google] no text-search results for '{address}'")
+                return None, None, None
+
+            top = places[0]
+            loc = top.get("location") or {}
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
+            formatted = top.get("formattedAddress") or (top.get("displayName") or {}).get("text")
+            if lat is None or lng is None:
+                return None, None, formatted
+            print(f"[google] '{address}' → '{formatted}' @ {lat:.4f},{lng:.4f}")
+            return lat, lng, formatted
+
+    except httpx.HTTPStatusError as e:
+        print(f"[google] HTTP {e.response.status_code}: {e.response.text[:200]}")
+    except Exception as e:
+        print(f"[google] error for '{address}': {e}")
+    return None, None, None
+
+
 # ── Geocoding — multi-strategy ────────────────────────────────────────────────
 _MAPBOX_TOKEN = lambda: os.getenv("MAPBOX_ACCESS_TOKEN") or os.getenv("VITE_MAPBOX_TOKEN")
 
@@ -453,12 +520,28 @@ async def geocode(address: str) -> tuple[float | None, float | None]:
     return None, None
 
 
+async def resolve_address(address: str) -> tuple[float | None, float | None, str | None]:
+    """
+    Resolve a spoken/raw address to (lat, lng, canonical_address).
+    Try Google Places Autocomplete first (best at fuzzy spoken input),
+    fall back to the Mapbox pipeline.
+    """
+    lat, lng, formatted = await _google_places_resolve(address)
+    if lat is not None and lng is not None:
+        return lat, lng, formatted
+
+    lat, lng = await geocode(address)
+    return lat, lng, None
+
+
 # ── Call building & clustering ────────────────────────────────────────────────
 async def build_call(raw: dict, lat: float | None = None, lng: float | None = None) -> dict:
     normalized = normalize_payload(raw)
     payload = CallPayload(**normalized)
     if lat is None or lng is None:
-        lat, lng = await geocode(payload.location)
+        lat, lng, canonical = await resolve_address(payload.location)
+        if canonical:
+            payload.location = canonical  # show Google's exact address on the map
     score, tier = score_call(payload)
     return {
         "id":             str(uuid.uuid4()),
