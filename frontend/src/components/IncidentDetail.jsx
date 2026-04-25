@@ -5,7 +5,7 @@ import {
   Radio, CheckCircle
 } from 'lucide-react'
 import { TIER_COLORS } from '../data/mockIncidents'
-import { API_URL } from '../hooks/useIncidents'
+import { API_URL, API_HEADERS } from '../hooks/useIncidents'
 import '../styles/IncidentDetail.css'
 
 const TYPE_ICONS = {
@@ -37,7 +37,10 @@ export default function IncidentDetail({ incident, onClose }) {
 
   async function handleResolve() {
     try {
-      await fetch(`${API_URL}/incidents/${incident.id}`, { method: 'DELETE' })
+      await fetch(`${API_URL}/incidents/${incident.id}`, {
+        method: 'DELETE',
+        headers: API_HEADERS,
+      })
       onClose()
     } catch (e) {
       console.error('Resolve failed', e)

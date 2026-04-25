@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
+import { EventSourcePolyfill } from 'event-source-polyfill'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+// ngrok free tier shows a browser-warning interstitial on first visit.
+// This header tells ngrok to skip it for our requests.
+export const API_HEADERS = { 'ngrok-skip-browser-warning': 'true' }
 
 const TYPE_RULES = [
   { match: ['gas leak', 'gas-leak'],         hazard: true,  type: 'Infrastructure' },
@@ -69,7 +74,10 @@ export function useIncidents() {
     let cancelled = false
 
     const start = () => {
-      es = new EventSource(`${API_URL}/incidents/stream`)
+      es = new EventSourcePolyfill(`${API_URL}/incidents/stream`, {
+        headers: API_HEADERS,
+        heartbeatTimeout: 60_000,
+      })
       es.onmessage = (e) => {
         if (cancelled) return
         try {
