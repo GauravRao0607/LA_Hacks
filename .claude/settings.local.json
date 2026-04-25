@@ -14,7 +14,12 @@
       "Bash(ssh -T git@github.com)",
       "Bash(git remote *)",
       "Bash(npm uninstall:*)",
-      "Bash(./node_modules/.bin/vite *)"
+      "Bash(./node_modules/.bin/vite *)",
+      "Bash(pip install *)",
+      "Bash(uvicorn main:app --reload --port 8000)",
+      "Bash(echo \"Backend PID: $!\")",
+      "Bash(npm run *)",
+      "Bash(echo \"Frontend PID: $!\")"
     ]
   }
 }
