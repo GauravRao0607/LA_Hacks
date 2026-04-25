@@ -54,6 +54,7 @@ function buildDescription(inc) {
 function adapt(inc) {
   const totalPeople = (inc.calls || []).reduce((s, c) => s + (c.num_people || 0), 0)
   const hazardsBlob = (inc.calls || []).map(c => c.hazards || '').join(' ')
+  const topCall = [...(inc.calls || [])].sort((a, b) => (b.call_score || 0) - (a.call_score || 0))[0]
   return {
     ...inc,
     type:        mapType(inc.primary_emergency_type, hazardsBlob),
@@ -63,6 +64,7 @@ function adapt(inc) {
     people:      totalPeople || null,
     lat:         inc.centroid_lat,
     lng:         inc.centroid_lng,
+    situation:   topCall?.situation || '',
   }
 }
 

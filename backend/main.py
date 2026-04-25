@@ -4,7 +4,6 @@ import math
 import os
 import re
 import uuid
-import random
 from datetime import datetime
 from typing import Any, Optional
 
@@ -14,6 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+try:
+    import anthropic as _anthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
 
 load_dotenv()
 
@@ -72,6 +77,7 @@ class CallPayload(BaseModel):
     caller_name: str
     location: str
     emergency_type: Optional[str] = "unknown"
+    situation: Optional[str] = ""
     num_people: Optional[Any] = 1
     injuries: Optional[str] = "none"
     hazards: Optional[str] = "none"
@@ -109,6 +115,7 @@ def normalize_payload(raw: dict) -> dict:
         "caller_name":    normalize_str(raw.get("caller_name"), "Unknown"),
         "location":       normalize_str(raw.get("location"), "Unknown location"),
         "emergency_type": normalize_str(raw.get("emergency_type"), "unknown"),
+        "situation":      normalize_str(raw.get("situation"), ""),
         "num_people":     normalize_num_people(raw.get("num_people")),
         "injuries":       normalize_str(raw.get("injuries"), "none"),
         "hazards":        normalize_str(raw.get("hazards"), "none"),
@@ -126,6 +133,32 @@ def extract_elevenlabs_params(body: dict) -> dict:
         if "parameters" in tc:
             return tc["parameters"]
     return body
+
+
+def extract_params_from_conversation_history(body: dict) -> dict | None:
+    """
+    When the tool call 404s, ElevenLabs still sends a post_call_transcription
+    webhook containing the attempted tool params in system__conversation_history.
+    Pull them out so we don't lose the call.
+    """
+    try:
+        data = body.get("data", {})
+        client_data = data.get("conversation_initiation_client_data", {})
+        extra = client_data.get("custom_llm_extra_body", {})
+        history_raw = extra.get("system__conversation_history", "")
+        if not history_raw:
+            return None
+        entries = json.loads(history_raw).get("entries", [])
+        for entry in reversed(entries):
+            if entry.get("role") == "agent" and "tool_requests" in entry:
+                for req in entry["tool_requests"]:
+                    params = json.loads(req.get("params_as_json") or "{}")
+                    if params.get("location"):
+                        print(f"[history] recovered tool params: {params}")
+                        return params
+    except Exception as e:
+        print(f"[history] extraction error: {e}")
+    return None
 
 
 # ── Geo / family helpers ──────────────────────────────────────────────────────
@@ -195,7 +228,7 @@ def score_call(payload: CallPayload) -> tuple[int, str]:
         score += 10
 
     score = min(100, max(0, score))
-    if score >= 70:
+    if score >= 75:
         tier = "Critical"
     elif score >= 40:
         tier = "Urgent"
@@ -235,7 +268,7 @@ def score_incident(incident: dict) -> tuple[int, str]:
     )
     score = int(min(100, max(0, score)))
 
-    if score >= 70:
+    if score >= 75:
         tier = "Critical"
     elif score >= 40:
         tier = "Urgent"
@@ -294,28 +327,130 @@ def required_responders(incident: dict) -> dict[str, int]:
     return units
 
 
-# ── Geocoding ─────────────────────────────────────────────────────────────────
+# ── Address correction via Claude ─────────────────────────────────────────────
+async def correct_address_with_claude(address: str) -> str | None:
+    if not _ANTHROPIC_AVAILABLE:
+        return None
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "A 911 caller gave this address — it may have speech-to-text "
+                    "errors or misheard street names. Correct it to the most likely "
+                    "real street address. Return ONLY the corrected address, nothing else.\n\n"
+                    f"Transcribed: {address}"
+                )
+            }]
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        print(f"[correct_address] error: {e}")
+        return None
+
+
+# ── Geocoding — multi-strategy ────────────────────────────────────────────────
+_MAPBOX_TOKEN = lambda: os.getenv("MAPBOX_ACCESS_TOKEN") or os.getenv("VITE_MAPBOX_TOKEN")
+
+
+async def _geocode_v6(addr: str, token: str) -> tuple[float | None, float | None]:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.mapbox.com/search/geocode/v6/forward",
+                params={
+                    "q": addr,
+                    "access_token": token,
+                    "types": "address,place,street",
+                    "limit": 1,
+                },
+            )
+            resp.raise_for_status()
+            features = resp.json().get("features", [])
+            if features:
+                coords = features[0]["geometry"]["coordinates"]
+                print(f"[geocode/v6] '{addr}' → {coords[1]:.4f},{coords[0]:.4f}")
+                return coords[1], coords[0]
+    except Exception as e:
+        print(f"[geocode/v6] error for '{addr}': {e}")
+    return None, None
+
+
+async def _geocode_suggest(addr: str, token: str) -> tuple[float | None, float | None]:
+    """Mapbox Search Box Suggest — handles fuzzy / misheard street names."""
+    session = str(uuid.uuid4())
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            suggest = await client.get(
+                "https://api.mapbox.com/search/searchbox/v1/suggest",
+                params={
+                    "q": addr,
+                    "access_token": token,
+                    "session_token": session,
+                    "types": "address,street",
+                    "limit": 1,
+                },
+            )
+            suggest.raise_for_status()
+            suggestions = suggest.json().get("suggestions", [])
+            if not suggestions:
+                return None, None
+            mapbox_id = suggestions[0].get("mapbox_id")
+            if not mapbox_id:
+                return None, None
+            retrieve = await client.get(
+                f"https://api.mapbox.com/search/searchbox/v1/retrieve/{mapbox_id}",
+                params={"access_token": token, "session_token": session},
+            )
+            retrieve.raise_for_status()
+            features = retrieve.json().get("features", [])
+            if features:
+                coords = features[0]["geometry"]["coordinates"]
+                print(f"[geocode/suggest] '{addr}' → {coords[1]:.4f},{coords[0]:.4f}")
+                return coords[1], coords[0]
+    except Exception as e:
+        print(f"[geocode/suggest] error for '{addr}': {e}")
+    return None, None
+
+
 async def geocode(address: str) -> tuple[float | None, float | None]:
-    token = os.getenv("MAPBOX_ACCESS_TOKEN") or os.getenv("VITE_MAPBOX_TOKEN")
+    token = _MAPBOX_TOKEN()
     if not token:
         return None, None
 
-    url = "https://api.mapbox.com/search/geocode/v6/forward"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params={"q": address, "access_token": token})
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:
-        print(f"[geocode] error: {e}")
-        return None, None
+    # Strategy 1: exact query
+    lat, lng = await _geocode_v6(address, token)
+    if lat is not None:
+        return lat, lng
 
-    features = data.get("features", [])
-    if not features:
-        return None, None
+    # Strategy 2: Mapbox Search Box Suggest (fuzzy / misheard street names)
+    lat, lng = await _geocode_suggest(address, token)
+    if lat is not None:
+        return lat, lng
 
-    coords = features[0]["geometry"]["coordinates"]
-    return coords[1], coords[0]  # lat, lng
+    # Strategy 3: strip house number and search just the street name
+    stripped = re.sub(r'^\d+\s+', '', address).strip()
+    if stripped != address:
+        lat, lng = await _geocode_v6(stripped, token)
+        if lat is not None:
+            return lat, lng
+
+    # Strategy 5: Claude correction (only if API key is configured)
+    corrected = await correct_address_with_claude(address)
+    if corrected and corrected.lower() != address.lower():
+        print(f"[geocode] Claude corrected '{address}' → '{corrected}'")
+        lat, lng = await _geocode_v6(corrected, token)
+        if lat is not None:
+            return lat, lng
+
+    print(f"[geocode] all strategies failed for '{address}'")
+    return None, None
 
 
 # ── Call building & clustering ────────────────────────────────────────────────
@@ -333,6 +468,7 @@ async def build_call(raw: dict, lat: float | None = None, lng: float | None = No
         "lat":            lat,
         "lng":            lng,
         "emergency_type": payload.emergency_type,
+        "situation":      payload.situation or "",
         "num_people":     payload.num_people,
         "injuries":       payload.injuries,
         "hazards":        payload.hazards,
@@ -448,7 +584,20 @@ def health_check():
 @app.post("/webhook/call", status_code=201)
 async def receive_call(request: Request):
     body = await request.json()
-    params = extract_elevenlabs_params(body)
+
+    # post_call_transcription = tool call failed (404 on our end).
+    # Recover the params ElevenLabs already extracted from the conversation.
+    if body.get("type") == "post_call_transcription":
+        params = extract_params_from_conversation_history(body)
+        if not params:
+            transcript_raw = (body.get("data") or {}).get("transcript", "")
+            params = await extract_from_transcript_with_claude(transcript_raw)
+        if not params or not params.get("location"):
+            print("[receive_call] post_call_transcription: no location found, skipping")
+            return {"detail": "no location found"}
+    else:
+        params = extract_elevenlabs_params(body)
+
     call = await build_call(params)
     calls[call["id"]] = call
 
@@ -472,12 +621,7 @@ async def call_end(request: Request):
     )
     if not tool_fired:
         transcript_raw = body.get("transcript", "")
-        if isinstance(transcript_raw, list):
-            transcript = " ".join(m.get("message", m.get("text", "")) for m in transcript_raw)
-        else:
-            transcript = str(transcript_raw)
-
-        extracted = extract_from_transcript(transcript)
+        extracted = await extract_from_transcript_with_claude(transcript_raw)
         if extracted.get("location"):
             call = await build_call(extracted)
             calls[call["id"]] = call
@@ -493,44 +637,119 @@ async def call_end(request: Request):
     return {"detail": "ok"}
 
 
-# ── Transcript keyword extraction (fallback) ──────────────────────────────────
+# ── Transcript helpers ────────────────────────────────────────────────────────
+def _flatten_transcript(transcript_raw) -> tuple[str, str]:
+    """Return (situation, full_text). situation = caller's first utterance."""
+    situation = ""
+    if isinstance(transcript_raw, list):
+        for msg in transcript_raw:
+            role = (msg.get("role") or "").lower()
+            text = (msg.get("message") or msg.get("text") or "").strip()
+            if role in ("user", "human", "caller") and text:
+                situation = text
+                break
+        full_text = " ".join(
+            (m.get("message") or m.get("text") or "") for m in transcript_raw
+        )
+    else:
+        full_text = str(transcript_raw)
+    return situation, full_text
+
+
+# ── Claude transcript extraction ─────────────────────────────────────────────
+async def extract_from_transcript_with_claude(transcript_raw) -> dict:
+    if not _ANTHROPIC_AVAILABLE:
+        return extract_from_transcript(transcript_raw)
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return extract_from_transcript(transcript_raw)
+
+    if isinstance(transcript_raw, list):
+        formatted = "\n".join(
+            f"{(m.get('role') or 'agent').upper()}: {m.get('message') or m.get('text') or ''}"
+            for m in transcript_raw
+        )
+    else:
+        formatted = str(transcript_raw)
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Extract emergency information from this 911 call transcript. "
+                    "Return a JSON object with these exact fields:\n"
+                    "- caller_name: caller's first name (\"Unknown\" if not given)\n"
+                    "- location: street address, intersection, or landmark (\"\" if none)\n"
+                    "- situation: caller's own words describing their distress\n"
+                    "- emergency_type: one of: cardiac arrest, fire, structural collapse, "
+                    "flooding, car accident, shooting, stabbing, medical, unknown\n"
+                    "- injuries: injury description or \"none\"\n"
+                    "- hazards: active dangers or \"none\"\n"
+                    "- mobility: \"mobile\", \"trapped\", \"unable to move\", or \"limited mobility\"\n"
+                    "- num_people: integer (default 1)\n\n"
+                    "Return ONLY valid JSON.\n\nTranscript:\n" + formatted
+                )
+            }]
+        )
+        text = msg.content[0].text.strip()
+        if text.startswith("```"):
+            text = re.sub(r'^```(?:json)?\s*\n?', '', text)
+            text = re.sub(r'\n?\s*```$', '', text)
+        return json.loads(text)
+    except Exception as e:
+        print(f"[extract_claude] error: {e}, falling back to regex")
+        return extract_from_transcript(transcript_raw)
+
+
+# ── Transcript keyword extraction (regex fallback) ────────────────────────────
 EMERGENCY_KEYWORDS = {
-    "cardiac arrest":      ["cardiac arrest", "heart attack", "not breathing", "stopped breathing"],
-    "fire":                ["fire", "burning", "flames", "smoke"],
-    "structural collapse": ["collapse", "collapsed", "building fell"],
-    "flooding":            ["flood", "flooding", "water rising"],
-    "car accident":        ["car accident", "crash", "collision", "hit by a car"],
-    "shooting":            ["shot", "shooting", "gunshot"],
-    "stabbing":            ["stabbed", "stabbing", "knife"],
-    "medical":             ["injured", "hurt", "pain", "bleeding", "unconscious"],
+    "cardiac arrest":      ["cardiac arrest", "heart attack", "not breathing", "stopped breathing", "chest pain"],
+    "fire":                ["fire", "burning", "flames", "smoke", "on fire"],
+    "structural collapse": ["collapse", "collapsed", "building fell", "ceiling fell", "roof caved"],
+    "flooding":            ["flood", "flooding", "water rising", "underwater", "swept away"],
+    "car accident":        ["car accident", "crash", "collision", "hit by a car", "car crash", "vehicle"],
+    "shooting":            ["shot", "shooting", "gunshot", "gun", "fired at"],
+    "stabbing":            ["stabbed", "stabbing", "knife", "cut with"],
+    "medical":             ["injured", "hurt", "pain", "bleeding", "unconscious", "passed out", "fell down"],
 }
-INJURY_KEYWORDS   = ["unconscious", "not breathing", "heavy bleeding", "severe", "broken", "bleeding", "cuts"]
-HAZARD_KEYWORDS   = ["fire spreading", "gas leak", "weapons", "rising water", "debris"]
-MOBILITY_KEYWORDS = ["trapped", "unable to move", "cannot move", "immobile"]
+INJURY_KEYWORDS   = ["unconscious", "not breathing", "heavy bleeding", "severe", "broken", "bleeding", "cuts", "passed out"]
+HAZARD_KEYWORDS   = ["fire spreading", "gas leak", "weapons", "rising water", "debris", "power line", "downed line"]
+MOBILITY_KEYWORDS = ["trapped", "unable to move", "cannot move", "immobile", "can't move", "stuck"]
 LOCATION_PATTERNS = [
-    r'\b\d+\s+\w[\w\s]+?(?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|way|court|ct|place|pl)\b',
-    r'\b(?:near|at|on|corner of|intersection of)\s+[\w\s,]+',
-    r'\b\w[\w\s]+,\s*(?:los angeles|la|inglewood|santa monica|compton|torrance|pasadena)\b',
+    r'\b\d+\s+\w[\w\s]{2,30}?(?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|way|court|ct|place|pl|highway|hwy)\b',
+    r'\b(?:corner of|intersection of)\s+[\w\s]+\s+and\s+[\w\s,]+',
+    r'\b(?:near|at|on)\s+[\w\s,]{5,50}?(?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|way)\b',
+    r'\b\w[\w\s]{2,30},\s*[A-Z][a-zA-Z\s]{2,20}(?:,\s*[A-Z]{2})?\b',
 ]
 
-def extract_from_transcript(transcript: str) -> dict:
-    text = transcript.lower()
+def extract_from_transcript(transcript_raw) -> dict:
+    """Regex-based extraction. Accepts list of message dicts or plain string."""
+    situation, full_text = _flatten_transcript(transcript_raw)
+    text = full_text.lower()
+
     emergency_type = "unknown"
     for etype, keywords in EMERGENCY_KEYWORDS.items():
         if any(kw in text for kw in keywords):
             emergency_type = etype
             break
+
     location = None
     for pattern in LOCATION_PATTERNS:
-        m = re.search(pattern, transcript, re.IGNORECASE)
+        m = re.search(pattern, full_text, re.IGNORECASE)
         if m:
             location = m.group().strip()
             break
     if not location:
-        for sentence in re.split(r'[.!?]', transcript):
-            if any(w in sentence.lower() for w in ["street", "avenue", "blvd", "near", "at the", "on the"]):
+        road_words = ["street", "avenue", "blvd", "boulevard", "drive", "road", "lane", "way", "near", "at the", "on the"]
+        for sentence in re.split(r'[.!?,]', full_text):
+            if any(w in sentence.lower() for w in road_words):
                 location = sentence.strip()
                 break
+
     injuries = next((kw for kw in INJURY_KEYWORDS if kw in text), "none")
     hazards  = next((kw for kw in HAZARD_KEYWORDS  if kw in text), "none")
     mobility = "mobile"
@@ -538,6 +757,7 @@ def extract_from_transcript(transcript: str) -> dict:
         if kw in text:
             mobility = kw
             break
+
     num_people = 1
     m = re.search(r'(\d+)\s*(?:people|persons?|injured|victims?|individuals?)', text)
     if m:
@@ -547,13 +767,16 @@ def extract_from_transcript(transcript: str) -> dict:
             if re.search(rf'\b{word}\s+(?:people|persons?|injured)', text):
                 num_people = val
                 break
+
     caller_name = "Unknown"
-    m = re.search(r"(?:my name is|this is|i'm|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", transcript)
+    m = re.search(r"(?:my name is|this is|i'm|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", full_text)
     if m:
         caller_name = m.group(1)
+
     return {
         "caller_name":    caller_name,
         "location":       location or "",
+        "situation":      situation,
         "emergency_type": emergency_type,
         "num_people":     num_people,
         "injuries":       injuries,
@@ -605,58 +828,3 @@ def resolve_incident(incident_id: str):
     inc["updated_at"] = datetime.utcnow().isoformat()
     return {"detail": f"Incident {incident_id} resolved."}
 
-
-# ── Mock generator ────────────────────────────────────────────────────────────
-MOCK_LA_ADDRESSES = {
-    "1600 Vine St, Los Angeles, CA 90028":           (34.0983, -118.3268),
-    "350 S Grand Ave, Los Angeles, CA 90071":         (34.0523, -118.2579),
-    "6801 Hollywood Blvd, Los Angeles, CA 90028":     (34.1016, -118.3403),
-    "11000 Kinross Ave, Los Angeles, CA 90024":       (34.0611, -118.4468),
-    "3900 W Manchester Blvd, Inglewood, CA 90305":    (33.9581, -118.3694),
-    "2900 Los Feliz Blvd, Los Angeles, CA 90039":     (34.1019, -118.2813),
-    "5900 Wilshire Blvd, Los Angeles, CA 90036":      (34.0626, -118.3524),
-    "801 S Figueroa St, Los Angeles, CA 90017":       (34.0467, -118.2618),
-    "4100 W Sunset Blvd, Los Angeles, CA 90029":      (34.0868, -118.2966),
-    "1 World Way, Los Angeles, CA 90045":             (33.9425, -118.4081),
-}
-MOCK_EMERGENCY_TYPES = [
-    "cardiac arrest", "fire", "structural collapse",
-    "flooding", "car accident", "noise complaint", "minor injury",
-]
-MOCK_INJURIES  = ["unconscious", "not breathing", "heavy bleeding", "broken arm", "minor cuts", "none"]
-MOCK_HAZARDS   = ["fire spreading", "gas leak", "weapons", "rising water", "debris on road", "none"]
-MOCK_MOBILITY  = ["trapped", "unable to move", "mobile", "limited mobility"]
-
-
-@app.post("/incidents/mock", status_code=201)
-async def mock_incident(cluster: bool = True):
-    """
-    Generates a synthetic call and runs it through clustering.
-    cluster=true (default) lets it merge into nearby same-family incidents.
-    cluster=false jitters the coords so it always becomes a new incident.
-    """
-    address = random.choice(list(MOCK_LA_ADDRESSES.keys()))
-    lat, lng = MOCK_LA_ADDRESSES[address]
-    if not cluster:
-        lat += random.uniform(-0.02, 0.02)
-        lng += random.uniform(-0.02, 0.02)
-
-    raw = {
-        "caller_name":    f"Caller_{random.randint(100, 999)}",
-        "location":       address,
-        "emergency_type": random.choice(MOCK_EMERGENCY_TYPES),
-        "num_people":     random.randint(1, 15),
-        "injuries":       random.choice(MOCK_INJURIES),
-        "hazards":        random.choice(MOCK_HAZARDS),
-        "mobility":       random.choice(MOCK_MOBILITY),
-        "timestamp":      datetime.utcnow().isoformat(),
-    }
-    call = await build_call(raw, lat=lat, lng=lng)
-    calls[call["id"]] = call
-
-    match = find_matching_incident(call)
-    if match:
-        incident = merge_call_into_incident(call, match)
-    else:
-        incident = create_incident_for_call(call)
-    return serialize_incident(incident)

@@ -26,7 +26,7 @@ export default function App() {
       />
 
       <div className="app-layout">
-        <TopBar />
+        <TopBar incidents={incidents} />
         <div className="app-content">
           <Sidebar
             incidents={incidents}

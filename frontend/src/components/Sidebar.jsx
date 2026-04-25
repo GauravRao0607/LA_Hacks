@@ -2,7 +2,7 @@ import {
   LifeBuoy, HeartPulse, Truck, Building2,
   UserSearch, Zap, AlertTriangle
 } from 'lucide-react'
-import { TIER_COLORS } from '../data/mockIncidents'
+import { TIER_COLORS } from '../data/constants'
 import '../styles/Sidebar.css'
 
 const TYPE_ICONS = {

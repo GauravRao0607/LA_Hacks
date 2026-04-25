@@ -2,9 +2,9 @@ import {
   X, MapPin, Clock, TrendingUp, Hash, Users,
   LifeBuoy, HeartPulse, Truck, Building2,
   UserSearch, Zap, AlertTriangle,
-  Radio, CheckCircle
+  Radio, CheckCircle, MessageSquareQuote
 } from 'lucide-react'
-import { TIER_COLORS } from '../data/mockIncidents'
+import { TIER_COLORS } from '../data/constants'
 import { API_URL, API_HEADERS } from '../hooks/useIncidents'
 import '../styles/IncidentDetail.css'
 
@@ -80,6 +80,25 @@ export default function IncidentDetail({ incident, onClose }) {
           <div className="detail-description" style={{ '--tier': tierColor }}>
             {incident.description}
           </div>
+
+          {incident.situation && (
+            <div style={{
+              margin: '10px 0 4px',
+              padding: '8px 12px',
+              borderRadius: 6,
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              fontSize: 12,
+              color: 'rgba(255,255,255,0.65)',
+              fontStyle: 'italic',
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+            }}>
+              <MessageSquareQuote size={13} style={{ marginTop: 1, flexShrink: 0, color: tierColor }} />
+              "{incident.situation}"
+            </div>
+          )}
 
           <div className="detail-fields">
             <div className="detail-field">
