@@ -58,10 +58,16 @@ function interpolateRoute(coords, t) {
   return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac]
 }
 
-export function useDispatch() {
+export function useDispatch(selectedIncidentId = null) {
   const [dispatches, setDispatches]     = useState({}) // incidentId → dispatch record
   const [vehiclePositions, setPositions] = useState({})
   const rafRef = useRef(null)
+
+  // When an incident is selected, narrow the map's vehicles / routes /
+  // stations to that incident only. With nothing selected, show everything.
+  const visibleDispatches = selectedIncidentId
+    ? (dispatches[selectedIncidentId] ? { [selectedIncidentId]: dispatches[selectedIncidentId] } : {})
+    : dispatches
 
   // Animation loop — runs while any vehicle is en-route
   useEffect(() => {
@@ -187,7 +193,7 @@ export function useDispatch() {
   // Build GeoJSON for map rendering
   const routeGeoJSON = {
     type: 'FeatureCollection',
-    features: Object.values(dispatches).flatMap(d =>
+    features: Object.values(visibleDispatches).flatMap(d =>
       d.assignments
         .filter(a => a.route?.length > 1)
         .map(a => ({
@@ -200,7 +206,7 @@ export function useDispatch() {
 
   const vehicleGeoJSON = {
     type: 'FeatureCollection',
-    features: Object.values(dispatches).flatMap(d =>
+    features: Object.values(visibleDispatches).flatMap(d =>
       d.assignments.map(a => {
         const pos = vehiclePositions[a.vehicleId] || [a.originLng, a.originLat]
         return {
@@ -216,7 +222,7 @@ export function useDispatch() {
   const stationGeoJSON = (() => {
     const seen = new Set()
     const features = []
-    Object.values(dispatches).forEach(d => {
+    Object.values(visibleDispatches).forEach(d => {
       d.assignments.forEach(a => {
         const key = `${a.originLat},${a.originLng}`
         if (seen.has(key)) return

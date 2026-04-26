@@ -13,7 +13,7 @@ export default function App() {
   const [showGraph, setShowGraph]   = useState(false)
 
   const incidents = useIncidents()
-  const { dispatches, vehicleGeoJSON, routeGeoJSON, stationGeoJSON, dispatch, recallDispatch } = useDispatch()
+  const { dispatches, vehicleGeoJSON, routeGeoJSON, stationGeoJSON, dispatch, recallDispatch } = useDispatch(selectedId)
 
   const selectedIncident = incidents.find(i => i.id === selectedId) || null
 
