@@ -71,7 +71,7 @@
 .incident-list {
   flex: 1;
   overflow-y: auto;
-  min-height: 0;
+  min-height: 80px;
 }
 
 .incident-list::-webkit-scrollbar { width: 1px; }
@@ -206,11 +206,12 @@
 
 /* ── Dispatch section ──────────────────────────────────────────────────── */
 .dispatch-section {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-height: 0;
   border-top: 1px solid rgba(255,255,255,0.05);
   display: flex;
   flex-direction: column;
-  max-height: 280px;
+  overflow: hidden;
 }
 
 .dispatch-section-header {
@@ -237,6 +238,8 @@
 
 .dispatch-list {
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -320,6 +323,13 @@
   50%      { opacity: 0.25; }
 }
 
+.ds-chevron {
+  font-size: 8px;
+  color: #374151;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
 .ds-recall {
   width: 18px;
   height: 18px;
@@ -343,7 +353,14 @@
   display: flex;
   flex-direction: column;
   border-top: 1px solid rgba(255,255,255,0.04);
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.06) transparent;
 }
+
+.ds-units::-webkit-scrollbar { width: 2px; }
+.ds-units::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); }
 
 .ds-unit {
   display: flex;

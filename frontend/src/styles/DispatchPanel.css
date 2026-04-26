@@ -10,8 +10,6 @@
   gap: 6px;
   min-width: 360px;
   max-width: 560px;
-  max-height: calc(100vh - 80px);
-  overflow: hidden;
   animation: dpSlideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -48,8 +46,7 @@
 
 .dp-list {
   overflow-y: auto;
-  flex: 1;
-  min-height: 0;
+  max-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -153,7 +150,15 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent;
 }
+
+.dp-units::-webkit-scrollbar { width: 3px; }
+.dp-units::-webkit-scrollbar-track { background: transparent; }
+.dp-units::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
 
 .dp-unit {
   display: flex;

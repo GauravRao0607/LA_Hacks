@@ -34,7 +34,10 @@ function EtaCounter({ startTime, duration, status }) {
 
 function DispatchSection({ dispatches, onRecall }) {
   const entries = Object.values(dispatches)
+  const [expanded, setExpanded] = useState({})
   if (entries.length === 0) return null
+
+  const toggle = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
 
   return (
     <div className="dispatch-section">
@@ -45,13 +48,17 @@ function DispatchSection({ dispatches, onRecall }) {
 
       <div className="dispatch-list">
         {entries.map(d => {
-          const allOnScene  = d.assignments.every(a => a.status === 'on-scene')
-          const tierColor   = TIER_COLORS[d.incident.tier]
+          const allOnScene = d.assignments.every(a => a.status === 'on-scene')
+          const tierColor  = TIER_COLORS[d.incident.tier]
+          const isOpen     = !!expanded[d.incident.id]
 
           return (
-            <div key={d.incident.id} className={`ds-card ${allOnScene ? 'on-scene' : ''}`}>
-              {/* Row 1: incident info */}
-              <div className="ds-row ds-row-top">
+            <div key={d.incident.id} className={`ds-card ${allOnScene ? 'on-scene' : ''} ${isOpen ? 'open' : ''}`}>
+              <div
+                className="ds-row ds-row-top"
+                onClick={() => toggle(d.incident.id)}
+                style={{ cursor: 'pointer' }}
+              >
                 <div className="ds-tier-bar" style={{ background: tierColor }} />
                 <div className="ds-info">
                   <span className="ds-type">{d.incident.type}</span>
@@ -62,31 +69,33 @@ function DispatchSection({ dispatches, onRecall }) {
                     ? <CheckCircle size={10} style={{ color: '#34d399' }} />
                     : <span className="ds-pulse" />}
                 </div>
-                <button className="ds-recall" onClick={() => onRecall(d.incident.id)} title="Recall">
+                <span className="ds-chevron">{isOpen ? '▴' : '▾'}</span>
+                <button className="ds-recall" onClick={e => { e.stopPropagation(); onRecall(d.incident.id) }} title="Recall">
                   <X size={9} />
                 </button>
               </div>
 
-              {/* Row 2: unit badges + ETAs */}
-              <div className="ds-units">
-                {d.assignments.map((a, i) => {
-                  const cfg = VEHICLE_CONFIG[a.type]
-                  return (
-                    <div key={i} className={`ds-unit ${a.status}`}>
-                      <span
-                        className="ds-unit-badge"
-                        style={{ color: cfg.color, background: cfg.color + '18', borderColor: cfg.color + '33' }}
-                      >
-                        {cfg.label}
-                      </span>
-                      <span className="ds-unit-name">{cfg.name}</span>
-                      {a.startTime
-                        ? <EtaCounter startTime={a.startTime} duration={a.duration} status={a.status} />
-                        : <span className="ds-eta">Routing…</span>}
-                    </div>
-                  )
-                })}
-              </div>
+              {isOpen && (
+                <div className="ds-units">
+                  {d.assignments.map((a, i) => {
+                    const cfg = VEHICLE_CONFIG[a.type]
+                    return (
+                      <div key={i} className={`ds-unit ${a.status}`}>
+                        <span
+                          className="ds-unit-badge"
+                          style={{ color: cfg.color, background: cfg.color + '18', borderColor: cfg.color + '33' }}
+                        >
+                          {cfg.label}
+                        </span>
+                        <span className="ds-unit-name">{cfg.name}</span>
+                        {a.startTime
+                          ? <EtaCounter startTime={a.startTime} duration={a.duration} status={a.status} />
+                          : <span className="ds-eta">Routing…</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )
         })}
