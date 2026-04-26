@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start backend, frontend, ngrok, and cloudflared. Logs to /tmp/.
+# Start backend, frontend, ngrok, and localhost.run. Logs to /tmp/.
 # Idempotent: skips anything already running.
 
 set -u
@@ -47,14 +47,15 @@ else
   echo "→ ngrok starting (log: $LOG_DIR/ngrok.log)"
 fi
 
-# cloudflared (frontend)
-CF_PATTERN="cloudflared tunnel --url http://localhost:$FRONTEND_PORT"
-if is_running "$CF_PATTERN"; then
-  echo "✓ cloudflared already running"
+# localhost.run (frontend) — tunnels over SSH, works on restrictive networks
+LR_PATTERN="ssh -R 80:localhost:$FRONTEND_PORT"
+if is_running "$LR_PATTERN"; then
+  echo "✓ localhost.run already running"
 else
-  nohup cloudflared tunnel --url "http://localhost:$FRONTEND_PORT" \
-    > "$LOG_DIR/cloudflared.log" 2>&1 &
-  echo "→ cloudflared starting (log: $LOG_DIR/cloudflared.log)"
+  nohup ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 \
+    -R "80:localhost:$FRONTEND_PORT" nokey@localhost.run \
+    > "$LOG_DIR/localhostrun.log" 2>&1 &
+  echo "→ localhost.run starting (log: $LOG_DIR/localhostrun.log)"
 fi
 
 # Wait for tunnels to come up and resolve their URLs.
@@ -69,10 +70,10 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 
-CF_URL=""
+LR_URL=""
 for _ in $(seq 1 30); do
-  CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/cloudflared.log" 2>/dev/null | head -1)
-  [ -n "$CF_URL" ] && break
+  LR_URL=$(grep -oE 'https://[a-z0-9-]+\.lhr\.life' "$LOG_DIR/localhostrun.log" 2>/dev/null | head -1)
+  [ -n "$LR_URL" ] && break
   sleep 0.5
 done
 
@@ -81,8 +82,8 @@ echo "── ready ──"
 echo "  Local frontend:   http://localhost:$FRONTEND_PORT"
 echo "  Local backend:    http://localhost:$BACKEND_PORT"
 [ -n "$NGROK_URL" ] && echo "  Public backend:   $NGROK_URL"
-[ -n "$CF_URL" ]    && echo "  Public frontend:  $CF_URL"
+[ -n "$LR_URL" ]    && echo "  Public frontend:  $LR_URL"
 [ -z "$NGROK_URL" ] && echo "  ⚠ ngrok URL not detected — check $LOG_DIR/ngrok.log"
-[ -z "$CF_URL" ]    && echo "  ⚠ cloudflared URL not detected yet — check $LOG_DIR/cloudflared.log"
+[ -z "$LR_URL" ]    && echo "  ⚠ localhost.run URL not detected yet — check $LOG_DIR/localhostrun.log"
 echo ""
 echo "stop with:  $REPO/stop.sh"
