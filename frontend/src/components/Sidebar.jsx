@@ -95,7 +95,22 @@ function DispatchSection({ dispatches, onRecall }) {
   )
 }
 
+function timeAgo(iso) {
+  if (!iso) return ''
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  return `${Math.floor(m / 60)}h ago`
+}
+
 export default function Sidebar({ incidents = [], selectedId, onSelect, dispatches = {}, onRecall }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 10000)
+    return () => clearInterval(id)
+  }, [])
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
@@ -145,7 +160,7 @@ export default function Sidebar({ incidents = [], selectedId, onSelect, dispatch
                 {isDispatched
                   ? <span className="dispatched-badge">●</span>
                   : <div className="tier-dot" />}
-                <div className="time-ago">{incident.timeAgo}</div>
+                <div className="time-ago">{timeAgo(incident.created_at)}</div>
               </div>
             </div>
           )

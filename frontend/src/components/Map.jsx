@@ -10,6 +10,23 @@ const TIER_OPACITY = { Critical: 1.0, Urgent: 0.9, Standard: 0.8 }
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
+function makePinImage(color) {
+  const W = 28, H = 38
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')
+  const cx = W / 2, r = 12, cy = r + 2
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.fillStyle = color; ctx.fill()
+  ctx.beginPath()
+  ctx.moveTo(cx - 6, cy + 8); ctx.lineTo(cx, H - 2); ctx.lineTo(cx + 6, cy + 8)
+  ctx.fillStyle = color; ctx.fill()
+  ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fill()
+  return { width: W, height: H, data: new Uint8Array(ctx.getImageData(0, 0, W, H).data.buffer) }
+}
+
 function toIncidentFC(incidents) {
   return {
     type: 'FeatureCollection',
@@ -82,6 +99,10 @@ export default function ThreatMap({
         'star-intensity': 0.85,
       })
 
+      Object.entries(TIER_COLORS).forEach(([tier, color]) => {
+        map.addImage(`pin-${tier}`, makePinImage(color))
+      })
+
       // ── Incidents ──────────────────────────────────────────────────────────
       map.addSource('incidents', { type: 'geojson', data: toIncidentFC(incidentsRef.current) })
       map.addLayer({ id: 'incidents-halo', type: 'circle', source: 'incidents', paint: {
@@ -94,13 +115,11 @@ export default function ThreatMap({
         'circle-color':   ['get', 'color'],
         'circle-opacity': 0.3, 'circle-blur': 0.5,
       }})
-      map.addLayer({ id: 'incidents-core', type: 'circle', source: 'incidents', paint: {
-        'circle-radius':        ['interpolate', ['linear'], ['zoom'], 2, 3, 6, 7, 12, 12],
-        'circle-color':         ['get', 'color'],
-        'circle-opacity':       ['get', 'opacity'],
-        'circle-stroke-width':  1.5,
-        'circle-stroke-color':  '#ffffff',
-        'circle-stroke-opacity': 0.6,
+      map.addLayer({ id: 'incidents-pins', type: 'symbol', source: 'incidents', layout: {
+        'icon-image':         ['concat', 'pin-', ['get', 'tier']],
+        'icon-size':          ['interpolate', ['linear'], ['zoom'], 4, 0.7, 8, 1.0, 12, 1.3],
+        'icon-allow-overlap': true,
+        'icon-anchor':        'bottom',
       }})
       map.addLayer({ id: 'incidents-pulse', type: 'circle', source: 'incidents',
         filter: ['==', ['get', 'tier'], 'Critical'],
@@ -167,13 +186,13 @@ export default function ThreatMap({
       }})
 
       // ── Interaction ────────────────────────────────────────────────────────
-      map.on('click', 'incidents-core', e => {
+      map.on('click', 'incidents-pins', e => {
         const id  = e.features[0].properties.id
         const inc = incidentsRef.current.find(i => i.id === id)
         if (inc) onSelectIncident(inc)
       })
-      map.on('mouseenter', 'incidents-core', () => { map.getCanvas().style.cursor = 'pointer' })
-      map.on('mouseleave', 'incidents-core', () => { map.getCanvas().style.cursor = '' })
+      map.on('mouseenter', 'incidents-pins', () => { map.getCanvas().style.cursor = 'pointer' })
+      map.on('mouseleave', 'incidents-pins', () => { map.getCanvas().style.cursor = '' })
     })
 
     const onResize = () => map.resize()
@@ -217,29 +236,26 @@ export default function ThreatMap({
     const map = mapRef.current
     if (!map?.isStyleLoaded()) return
     if (selectedId) {
-      map.setPaintProperty('incidents-core', 'circle-stroke-width',
-        ['case', ['==', ['get', 'id'], selectedId], 3, 1.5])
-      map.setPaintProperty('incidents-core', 'circle-radius', [
+      map.setLayoutProperty('incidents-pins', 'icon-size', [
         'interpolate', ['linear'], ['zoom'],
-        2, ['case', ['==', ['get', 'id'], selectedId], 5, 3],
-        6, ['case', ['==', ['get', 'id'], selectedId], 10, 7],
-        12, ['case', ['==', ['get', 'id'], selectedId], 16, 12],
+        4,  ['case', ['==', ['get', 'id'], selectedId], 1.0, 0.7],
+        8,  ['case', ['==', ['get', 'id'], selectedId], 1.35, 1.0],
+        12, ['case', ['==', ['get', 'id'], selectedId], 1.7, 1.3],
       ])
     } else {
-      map.setPaintProperty('incidents-core', 'circle-stroke-width', 1.5)
-      map.setPaintProperty('incidents-core', 'circle-radius',
-        ['interpolate', ['linear'], ['zoom'], 2, 3, 6, 7, 12, 12])
+      map.setLayoutProperty('incidents-pins', 'icon-size',
+        ['interpolate', ['linear'], ['zoom'], 4, 0.7, 8, 1.0, 12, 1.3])
     }
   }, [selectedId])
 
-  // ── Fly to selected incident ──────────────────────────────────────────────
+  // ── Fly to selected incident (only on selection change, not data updates) ──
   useEffect(() => {
     const map = mapRef.current
     if (!map || !selectedId) return
-    const inc = incidents.find(i => i.id === selectedId)
+    const inc = incidentsRef.current.find(i => i.id === selectedId)
     if (!inc?.lat) return
     map.flyTo({ center: [inc.lng, inc.lat], zoom: 14, duration: 1800, essential: true })
-  }, [selectedId, incidents])
+  }, [selectedId])
 
   return <div ref={containerRef} className="map-container" />
 }

@@ -12,6 +12,7 @@ score_incident_with_gemini() in main.py.
 """
 
 import json
+import math
 import os
 from datetime import datetime
 from typing import Any
@@ -44,36 +45,30 @@ GEMINI_URL = (
 )
 
 SCORING_SYSTEM_PROMPT = (
-    "You are the urgency-triage component of a 911 dispatch system. "
-    "You receive a clustered emergency incident (one or more 911 calls at "
-    "the same location and emergency type) and assign it a priority score "
-    "from 0 to 100 along with a tier.\n\n"
+    "You are the triage and dispatch-planning component of a 911 emergency system. "
+    "Given a clustered incident (one or more 911 calls at the same location), you must:\n"
+    "1. Assign a priority score (0–100) and tier.\n"
+    "2. Determine exactly how many fire trucks, ambulances, and police units to dispatch.\n\n"
     "Tiers:\n"
-    "- Critical (score 75–100): immediate life-threat. Active fire in a "
-    "  building, mass casualties, cardiac arrest, active shooter / stabbing "
-    "  in progress, structural collapse with people inside, gunshot wounds, "
-    "  unconscious / not-breathing victims, multiple severe injuries, "
-    "  hazards spreading uncontrollably (fire, gas leak, rising water).\n"
-    "- Urgent (score 40–74): significant emergency requiring fast response "
-    "  but not imminent mass-casualty. Single moderate injury, isolated "
-    "  hazard, robbery without confirmed shots, contained car crashes with "
-    "  injuries, person trapped without immediate life threat.\n"
-    "- Standard (score 0–39): non-life-threatening. Minor injuries, no "
-    "  active threats, routine response.\n\n"
-    "Consider together:\n"
-    "1. Severity of injuries (fatal / unconscious / gunshot wounds = max).\n"
-    "2. Active hazards still spreading (fire spreading, gas leak, weapons, "
-    "   rising water).\n"
-    "3. Number of people affected — more people raises urgency, especially "
-    "   when combined with active hazards.\n"
-    "4. Mobility — trapped / immobile victims raise urgency in fire / "
-    "   collapse / flood scenarios.\n"
-    "5. Time in queue — older incidents should get a small priority boost.\n"
-    "6. Cluster size — multiple independent calls at the same location is "
-    "   stronger evidence of severity than a single call.\n\n"
-    "Return ONLY a JSON object with keys: score (integer 0–100), tier "
-    "(\"Critical\" | \"Urgent\" | \"Standard\"), reasoning (one short "
-    "sentence). Be decisive — do not default to mid-range scores."
+    "- Critical (score 75–100): immediate life-threat — active building fire, mass casualties, "
+    "  cardiac arrest, active shooter, structural collapse with trapped victims, "
+    "  uncontrolled hazards (fire spreading, gas leak, rising water).\n"
+    "- Urgent (score 40–74): significant emergency — moderate injuries, isolated hazard, "
+    "  robbery without shots, contained crash with injuries, person trapped without immediate threat.\n"
+    "- Standard (score 0–39): non-life-threatening — minor injuries, no active threats.\n\n"
+    "Scoring factors:\n"
+    "1. Injury severity (fatal / unconscious / gunshot = max score).\n"
+    "2. Active spreading hazards (fire, gas leak, weapons, rising water).\n"
+    "3. Number of people — more people raises urgency when combined with active hazards.\n"
+    "4. Mobility — trapped victims in fire/collapse/flood raise score significantly.\n"
+    "5. Age in queue — older incidents get a small boost.\n"
+    "6. Cluster size — multiple independent calls confirm severity.\n\n"
+    "Dispatch guidelines (use your judgment — these are starting points):\n"
+    "- fire: 1 for small/contained, 2-3 for structure fires, 4+ for mass-casualty/spreading fires.\n"
+    "- ems: 1 for single patient, 2-3 for multiple injuries, 4+ for mass casualty.\n"
+    "- police: 0 for medical-only, 1-2 for most incidents, 3+ for violence/active threat.\n"
+    "- Scale ALL units up proportionally for large people counts (50+ people = multiply baselines).\n\n"
+    "Return ONLY a JSON object. Be decisive — do not default to mid-range scores or minimum unit counts."
 )
 
 
@@ -92,18 +87,19 @@ def _format_call_for_prompt(c: dict) -> str:
 async def score_incident_with_gemini(
     incident: dict,
     icalls: list[dict],
-) -> tuple[int, str]:
+) -> tuple[int, str, dict]:
     """
-    Ask Gemini 2.5 Flash to score this incident. Returns (score, tier).
-    Falls back to (50, 'Urgent') if no API key or the request fails.
+    Ask Gemini 2.5 Flash to score this incident and determine dispatch counts.
+    Returns (score, tier, required_responders).
+    Falls back to rule-based if no API key or the request fails.
     """
     api_key = os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("[gemini] GOOGLE_AI_API_KEY not set — defaulting to (50, Urgent)")
-        return 50, "Urgent"
+        print("[gemini] GOOGLE_AI_API_KEY not set — falling back to rule-based scorer")
+        return _rule_based_score(incident, icalls)
 
     if not icalls:
-        return 0, "Standard"
+        return 0, "Standard", {"fire": 0, "ems": 1, "police": 0}
 
     try:
         age_min = (
@@ -134,8 +130,17 @@ async def score_incident_with_gemini(
                     "score":     {"type": "integer"},
                     "tier":      {"type": "string", "enum": ["Critical", "Urgent", "Standard"]},
                     "reasoning": {"type": "string"},
+                    "required_responders": {
+                        "type": "object",
+                        "properties": {
+                            "fire":   {"type": "integer"},
+                            "ems":    {"type": "integer"},
+                            "police": {"type": "integer"},
+                        },
+                        "required": ["fire", "ems", "police"],
+                    },
                 },
-                "required": ["score", "tier"],
+                "required": ["score", "tier", "required_responders"],
             },
         },
     }
@@ -153,25 +158,67 @@ async def score_incident_with_gemini(
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             parsed = json.loads(text)
     except httpx.HTTPStatusError as e:
-        print(f"[gemini] HTTP {e.response.status_code}: {e.response.text[:200]}")
-        return 50, "Urgent"
+        print(f"[gemini] HTTP {e.response.status_code}: {e.response.text[:200]} — falling back to rule-based scorer")
+        return _rule_based_score(incident, icalls)
     except Exception as e:
-        print(f"[gemini] error: {e}")
-        return 50, "Urgent"
+        print(f"[gemini] error: {e} — falling back to rule-based scorer")
+        return _rule_based_score(incident, icalls)
 
     score = int(parsed.get("score", 50))
     score = max(0, min(100, score))
     tier = parsed.get("tier", "Urgent")
     if tier not in ("Critical", "Urgent", "Standard"):
-        # Re-derive from score if Gemini sent an unexpected tier label.
         tier = "Critical" if score >= 75 else ("Urgent" if score >= 40 else "Standard")
+
+    raw_resp = parsed.get("required_responders") or {}
+    responders = {
+        "fire":   max(0, int(raw_resp.get("fire",   0))),
+        "ems":    max(0, int(raw_resp.get("ems",    1))),
+        "police": max(0, int(raw_resp.get("police", 0))),
+    }
 
     reasoning = (parsed.get("reasoning") or "").replace("\n", " ")[:120]
     print(
         f"[gemini] incident {incident['id'][:8]} → score={score} tier={tier} "
-        f"calls={len(icalls)} reasoning='{reasoning}'"
+        f"responders={responders} calls={len(icalls)} reasoning='{reasoning}'"
     )
-    return score, tier
+    return score, tier, responders
+
+
+def _rule_based_score(incident: dict, icalls: list[dict]) -> tuple[int, str, dict]:
+    """Fallback when Gemini is unavailable."""
+    if not icalls:
+        return 0, "Standard", {"fire": 0, "ems": 1, "police": 0}
+    etype     = (incident.get("primary_emergency_type") or "").lower()
+    injuries  = " ".join((c.get("injuries")  or "") for c in icalls).lower()
+    hazards   = " ".join((c.get("hazards")   or "") for c in icalls).lower()
+    mobility  = " ".join((c.get("mobility")  or "") for c in icalls).lower()
+    max_people = max((c.get("num_people") or 1) for c in icalls)
+
+    score = 20
+    if any(k in etype or k in injuries for k in ("fire","collapse","cardiac","shoot","stab","trapped","explosion")):
+        score += 40
+    elif any(k in etype for k in ("flood","crash","accident","medical")):
+        score += 20
+    if any(k in injuries for k in ("unconscious","not breathing","severe","dying","bleeding out")):
+        score += 25
+    if any(k in hazards for k in ("fire spreading","gas leak","weapons","rising water")):
+        score += 15
+    if any(k in mobility for k in ("trapped","cannot move","immobile")):
+        score += 10
+    if max_people >= 100: score += 20
+    elif max_people >= 10: score += 10
+    elif max_people >= 3: score += 5
+    score = min(100, score)
+    tier = "Critical" if score >= 75 else ("Urgent" if score >= 40 else "Standard")
+
+    fire = 2 if "fire" in etype or "collapse" in etype else 0
+    ems  = max(1, min(6, max_people // 2)) if max_people > 1 else 1
+    police = 2 if any(k in etype for k in ("shoot","stab","violence")) else 1
+    if max_people >= 50:
+        fire = max(fire, 3); ems = max(ems, 4); police = max(police, 2)
+
+    return score, tier, {"fire": fire, "ems": ems, "police": police}
 
 
 # # ── Rule-based scorers (DISABLED — Gemini owns scoring; kept as fallback) ───

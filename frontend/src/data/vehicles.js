@@ -2,7 +2,6 @@ export const VEHICLE_CONFIG = {
   fire:   { color: '#f97316', label: 'F', name: 'Fire Truck',  bgColor: '#7c2d12' },
   ems:    { color: '#34d399', label: 'A', name: 'Ambulance',   bgColor: '#064e3b' },
   police: { color: '#60a5fa', label: 'P', name: 'Police Unit', bgColor: '#1e3a5f' },
-  rescue: { color: '#a78bfa', label: 'R', name: 'Rescue',      bgColor: '#3b1f6e' },
 }
 
 export const BASE_STATIONS = [
@@ -12,7 +11,6 @@ export const BASE_STATIONS = [
   { id: 'ems-2',    name: 'EMS North',       type: 'ems',    lat: 29.7710, lng: -95.3620, count: 2 },
   { id: 'police-1', name: 'HPD District 2',  type: 'police', lat: 29.7660, lng: -95.3510, count: 3 },
   { id: 'police-2', name: 'HPD District 5',  type: 'police', lat: 29.7430, lng: -95.3900, count: 2 },
-  { id: 'rescue-1', name: 'Rescue HQ',       type: 'rescue', lat: 29.7620, lng: -95.3925, count: 2 },
 ]
 
 // Expand stations into individual vehicle objects

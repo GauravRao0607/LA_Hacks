@@ -247,12 +247,12 @@ def required_responders(incident: dict) -> dict[str, int]:
 
     # Baseline mix per family (1-2 calls)
     base = {
-        "fire_complex": {"fire": 1, "ems": 1, "police": 0, "rescue": 1},
-        "medical":      {"fire": 0, "ems": 1, "police": 0, "rescue": 0},
-        "violence":     {"fire": 0, "ems": 1, "police": 2, "rescue": 0},
-        "water":        {"fire": 0, "ems": 1, "police": 0, "rescue": 1},
-        "traffic":      {"fire": 1, "ems": 1, "police": 1, "rescue": 0},
-    }.get(family, {"fire": 0, "ems": 1, "police": 1, "rescue": 0})
+        "fire_complex": {"fire": 2, "ems": 1, "police": 1},
+        "medical":      {"fire": 0, "ems": 1, "police": 0},
+        "violence":     {"fire": 0, "ems": 1, "police": 2},
+        "water":        {"fire": 1, "ems": 1, "police": 1},
+        "traffic":      {"fire": 1, "ems": 1, "police": 1},
+    }.get(family, {"fire": 0, "ems": 1, "police": 1})
 
     units = dict(base)
 
@@ -266,7 +266,7 @@ def required_responders(incident: dict) -> dict[str, int]:
         units[ranked[1]] += 1
     elif n >= 11:
         # Mass response floor
-        for k, v in {"fire": 4, "ems": 4, "police": 2, "rescue": 2}.items():
+        for k, v in {"fire": 4, "ems": 4, "police": 3}.items():
             units[k] = max(units[k], v)
         extra = (n - 10) // 5
         for k in units:
@@ -285,6 +285,21 @@ def required_responders(incident: dict) -> dict[str, int]:
     )
     if severe_count >= 2:
         units["ems"] += 1
+
+    # Scale by number of people across all calls
+    max_people = max((c.get("num_people") or 1) for c in icalls) if icalls else 1
+    if max_people >= 500:
+        for k, v in {"fire": 5, "ems": 6, "police": 4}.items():
+            units[k] = max(units[k], v)
+    elif max_people >= 50:
+        for k, v in {"fire": 3, "ems": 4, "police": 3}.items():
+            units[k] = max(units[k], v)
+    elif max_people >= 10:
+        for k, v in {"fire": 2, "ems": 3, "police": 2}.items():
+            units[k] = max(units[k], v)
+    elif max_people >= 5:
+        for k, v in {"fire": 1, "ems": 2, "police": 1}.items():
+            units[k] = max(units[k], v)
 
     return units
 
@@ -568,16 +583,16 @@ def update_incident_aggregates(incident: dict) -> None:
         latest = max(icalls, key=lambda c: c.get("timestamp", ""))
         incident["primary_emergency_type"] = latest["emergency_type"]
         incident["location_label"] = latest["location"]
-    incident["required_responders"] = required_responders(incident)
     incident["updated_at"] = datetime.utcnow().isoformat()
 
 
 async def _score_with_gemini_and_persist(incident: dict) -> None:
     """Synchronous-style scoring helper used by mutation paths."""
     icalls = [calls[cid] for cid in incident["call_ids"] if cid in calls]
-    score, tier = await scoring.score_incident_with_gemini(incident, icalls)
+    score, tier, responders = await scoring.score_incident_with_gemini(incident, icalls)
     incident["score"] = score
     incident["tier"] = tier
+    incident["required_responders"] = responders
     incident["updated_at"] = datetime.utcnow().isoformat()
 
 

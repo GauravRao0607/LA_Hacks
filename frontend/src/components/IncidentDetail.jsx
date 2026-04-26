@@ -1,10 +1,21 @@
+import { useState, useEffect } from 'react'
 import {
   X, MapPin, Clock, TrendingUp, Hash, Users,
   LifeBuoy, HeartPulse, Truck, Building2,
   UserSearch, Zap, AlertTriangle,
   Radio, CheckCircle, MessageSquareQuote
 } from 'lucide-react'
+
+function timeAgo(iso) {
+  if (!iso) return ''
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  return `${Math.floor(m / 60)}h ago`
+}
 import { TIER_COLORS } from '../data/constants'
+import { VEHICLE_CONFIG } from '../data/vehicles'
 import { API_URL, API_HEADERS } from '../hooks/useIncidents'
 import '../styles/IncidentDetail.css'
 
@@ -17,9 +28,13 @@ const TYPE_ICONS = {
   Infrastructure: Zap,
 }
 
-const RESPONDER_LABEL = { fire: 'Fire', ems: 'EMS', police: 'Police', rescue: 'Rescue' }
-
 export default function IncidentDetail({ incident, onClose, onDispatch, dispatched }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+
   if (!incident) return null
 
   const tierColor = TIER_COLORS[incident.tier]
@@ -94,7 +109,7 @@ export default function IncidentDetail({ incident, onClose, onDispatch, dispatch
 
             <div className="detail-field">
               <div className="detail-field-label"><Clock size={10} /> Reported</div>
-              <div className="detail-field-value">{incident.timeAgo}</div>
+              <div className="detail-field-value">{timeAgo(incident.created_at)}</div>
             </div>
 
             {incident.people != null && incident.people > 0 && (
@@ -135,11 +150,17 @@ export default function IncidentDetail({ incident, onClose, onDispatch, dispatch
               <div className="detail-divider" />
               <div className="responders-label">Responders needed</div>
               <div className="responders-list">
-                {respList.map(([k, v]) => (
-                  <div key={k} className="responder-chip">
-                    <strong>{v}</strong> {RESPONDER_LABEL[k] || k}
-                  </div>
-                ))}
+                {respList.map(([k, v]) => {
+                  const cfg = VEHICLE_CONFIG[k]
+                  if (!cfg) return null
+                  return (
+                    <div key={k} className="responder-card" style={{ '--rc': cfg.color }}>
+                      <div className="responder-card-badge">{cfg.label}</div>
+                      <div className="responder-card-name">{cfg.name}</div>
+                      <div className="responder-card-count">×{v}</div>
+                    </div>
+                  )
+                })}
               </div>
             </>
           )}
