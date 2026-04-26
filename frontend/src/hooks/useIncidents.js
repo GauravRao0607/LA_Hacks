@@ -30,7 +30,12 @@ function mapType(emergency_type, hazardsBlob) {
 
 function timeAgo(iso) {
   if (!iso) return ''
-  const ms = Date.now() - new Date(iso).getTime()
+  // Backend stores UTC but emits naive ISO strings ("2026-04-26T01:30:45.123456").
+  // JS parses naive strings as local time → for non-UTC timezones the parsed
+  // value lands in the future and Date.now() - it is negative, which we'd
+  // clamp to 0 ("0s ago" forever). Append 'Z' so it's parsed as UTC.
+  const utc = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z'
+  const ms = Date.now() - new Date(utc).getTime()
   const s = Math.max(0, Math.floor(ms / 1000))
   if (s < 60) return `${s}s ago`
   const m = Math.floor(s / 60)

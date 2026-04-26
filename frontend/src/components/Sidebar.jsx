@@ -97,7 +97,9 @@ function DispatchSection({ dispatches, onRecall }) {
 
 function timeAgo(iso) {
   if (!iso) return ''
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  // Backend emits naive UTC ISO strings; append 'Z' so JS parses as UTC, not local.
+  const utc = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z'
+  const s = Math.max(0, Math.floor((Date.now() - new Date(utc).getTime()) / 1000))
   if (s < 60) return `${s}s ago`
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ago`
