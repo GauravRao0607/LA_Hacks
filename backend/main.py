@@ -197,60 +197,97 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def score_call(payload: CallPayload) -> tuple[int, str]:
     score = 0
     etype = payload.emergency_type.lower()
+    injuries = (payload.injuries or "").lower()
+    hazards = (payload.hazards or "").lower()
+    mobility = (payload.mobility or "").lower()
+    n = payload.num_people or 1
 
-    HIGH = ["cardiac arrest", "fire", "structural collapse", "shooting", "stabbing"]
-    MEDIUM = ["flooding", "car accident"]
+    # ── Immediate life threat — auto Critical ─────────────────────────────────
+    INSTANT_CRITICAL = [
+        "dying", "going to die", "not breathing", "stopped breathing",
+        "no pulse", "unconscious", "unresponsive", "head", "decapitat",
+        "severed", "bleeding out", "can't breathe", "cannot breathe",
+        "heart attack", "cardiac arrest", "overdose", "drowning",
+        "on fire", "trapped in fire", "shooting", "shot", "stabbed",
+        "choking", "stroke", "seizure",
+        "multiple casualties", "mass casualty", "seven people injured",
+        "several people injured", "multiple injured", "all trapped"
+    ]
+    if any(k in injuries for k in INSTANT_CRITICAL) or \
+       any(k in etype for k in INSTANT_CRITICAL):
+        return 95, "Critical"
+
+    # ── Emergency type base score ─────────────────────────────────────────────
+    HIGH   = ["cardiac arrest", "fire", "structural collapse", "shooting", "stabbing",
+              "earthquake", "collapse", "trapped", "rescue", "crush"]
+    MEDIUM = ["flooding", "car accident", "medical", "injury"]
 
     if any(e in etype for e in HIGH):
-        score += 30
+        score += 40
     elif any(e in etype for e in MEDIUM):
-        score += 20
+        score += 25
     else:
         score += 5
 
-    injuries = (payload.injuries or "").lower()
-    severe_injury = "unconscious" in injuries or "not breathing" in injuries
-    if severe_injury:
-        score += 25
-    elif "heavy bleeding" in injuries or "severe" in injuries:
+    # ── Injury severity ───────────────────────────────────────────────────────
+    SEVERE   = ["unconscious", "not breathing", "heavy bleeding", "severe bleeding",
+                "critical", "dying", "life threatening", "decapitat", "severed",
+                "bleeding out", "no pulse", "unresponsive",
+                "crush", "crushing", "debris", "buried", "pinned", "multiple injured",
+                "seven injured", "several injured", "multiple people injured"]
+    MODERATE = ["bleeding", "broken", "fracture", "head injury", "chest pain",
+                "difficulty breathing", "severe pain", "cut", "laceration"]
+
+    if any(k in injuries for k in SEVERE):
+        score += 40
+    elif any(k in injuries for k in MODERATE):
         score += 20
-    elif injuries and injuries not in ("none", "no", "n/a"):
+    elif injuries and injuries not in ("none", "no", "n/a", "unknown"):
         score += 10
 
-    hazards = (payload.hazards or "").lower()
+    # ── Hazards ───────────────────────────────────────────────────────────────
+    CRITICAL_HAZARDS = ["fire spreading", "gas leak", "weapons", "rising water",
+                        "explosion", "armed", "gun", "knife", "power line"]
     hazard_hits = sum(1 for h in CRITICAL_HAZARDS if h in hazards)
-    score += hazard_hits * 10
+    score += hazard_hits * 12
     if hazards and hazards not in ("none", "no", "n/a") and hazard_hits == 0:
         score += 5
 
-    mobility = (payload.mobility or "").lower()
-    trapped = any(k in mobility for k in ("trapped", "unable to move", "cannot move", "immobile"))
-    if trapped:
+    # ── Mobility ──────────────────────────────────────────────────────────────
+    if any(k in mobility for k in ("trapped", "unable to move", "cannot move", "immobile", "stuck")):
         score += 15
 
-    n = payload.num_people or 1
+    # ── Number of people ──────────────────────────────────────────────────────
     if n >= 10:
-        score += 15
-    elif n >= 6:
-        score += 10
+        score += 25
+    elif n >= 7:
+        score += 18
+    elif n >= 5:
+        score += 12
     elif n >= 3:
-        score += 5
+        score += 7
+    elif n >= 2:
+        score += 3
 
-    # Non-linear interactions
+    # ── Non-linear combos ─────────────────────────────────────────────────────
     if "fire" in etype and n >= 3:
-        score = int(score * 1.25)
-    if trapped and hazard_hits > 0:
+        score = int(score * 1.3)
+    if any(k in mobility for k in ("trapped", "unable to move")) and hazard_hits > 0:
+        score += 15
+    if any(k in injuries for k in SEVERE) and n >= 2:
         score += 10
-    if severe_injury and n >= 3:
-        score += 10
+    if n >= 5 and any(k in mobility for k in ("trapped", "cannot move", "all trapped")):
+        score += 20
 
     score = min(100, max(0, score))
-    if score >= 75:
+
+    if score >= 70:
         tier = "Critical"
     elif score >= 40:
         tier = "Urgent"
     else:
         tier = "Standard"
+
     return score, tier
 
 
@@ -379,6 +416,14 @@ GOOGLE_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchT
 LA_CENTER = {"latitude": 34.0522, "longitude": -118.2437}
 LA_BIAS_RADIUS_M = 50_000  # Google caps locationBias circle radius at 50km
 
+CA_CENTER = {"latitude": 36.7783, "longitude": -119.4179}
+CA_BIAS_RADIUS_M = 400000  # covers all of California (for Mapbox only)
+# Google caps circle radius at 50km; use a rectangle for statewide CA bias instead
+CA_RECTANGLE = {
+    "low":  {"latitude": 32.5341, "longitude": -124.4096},
+    "high": {"latitude": 42.0126, "longitude": -114.1312},
+}
+
 
 async def _google_places_resolve(address: str) -> tuple[float | None, float | None, str | None]:
     """
@@ -408,7 +453,7 @@ async def _google_places_resolve(address: str) -> tuple[float | None, float | No
                     "regionCode":    "us",
                     "maxResultCount": 1,
                     "locationBias": {
-                        "circle": {"center": LA_CENTER, "radius": LA_BIAS_RADIUS_M},
+                        "rectangle": CA_RECTANGLE,
                     },
                 },
             )
@@ -449,6 +494,8 @@ async def _geocode_v6(addr: str, token: str) -> tuple[float | None, float | None
                     "access_token": token,
                     "types": "address,place,street",
                     "limit": 1,
+                    "proximity": "-119.4179,36.7783",
+                    "country": "us",
                 },
             )
             resp.raise_for_status()
@@ -475,6 +522,8 @@ async def _geocode_suggest(addr: str, token: str) -> tuple[float | None, float |
                     "session_token": session,
                     "types": "address,street",
                     "limit": 1,
+                    "country": "us",
+                    "proximity": "-119.4179,36.7783",
                 },
             )
             suggest.raise_for_status()
@@ -517,7 +566,7 @@ async def geocode(address: str) -> tuple[float | None, float | None]:
     # Strategy 3: strip house number and search just the street name
     stripped = re.sub(r'^\d+\s+', '', address).strip()
     if stripped != address:
-        lat, lng = await _geocode_v6(stripped, token)
+        lat, lng = await _geocode_v6(enrich_address(stripped), token)
         if lat is not None:
             return lat, lng
 
@@ -525,12 +574,24 @@ async def geocode(address: str) -> tuple[float | None, float | None]:
     corrected = await correct_address_with_claude(address)
     if corrected and corrected.lower() != address.lower():
         print(f"[geocode] Claude corrected '{address}' → '{corrected}'")
-        lat, lng = await _geocode_v6(corrected, token)
+        lat, lng = await _geocode_v6(enrich_address(corrected), token)
         if lat is not None:
             return lat, lng
 
     print(f"[geocode] all strategies failed for '{address}'")
     return None, None
+
+
+_CA_STATE_HINTS = ("ca", "california", " ca ", ",ca,")
+
+def enrich_address(address: str) -> str:
+    """Append California context if no state is already present."""
+    if not address:
+        return address
+    low = address.lower()
+    if any(h in low for h in _CA_STATE_HINTS):
+        return address
+    return address + ", California, USA"
 
 
 async def resolve_address(address: str) -> tuple[float | None, float | None, str | None]:
@@ -552,7 +613,7 @@ async def build_call(raw: dict, lat: float | None = None, lng: float | None = No
     normalized = normalize_payload(raw)
     payload = CallPayload(**normalized)
     if lat is None or lng is None:
-        lat, lng, canonical = await resolve_address(payload.location)
+        lat, lng, canonical = await resolve_address(enrich_address(payload.location))
         if canonical:
             payload.location = canonical  # show Google's exact address on the map
     score, tier = score_call(payload)
@@ -928,4 +989,18 @@ async def resolve_incident(incident_id: str):
         calls.pop(cid, None)
     await db.delete_incident(incident_id)
     return {"detail": f"Incident {incident_id} resolved."}
+
+
+# ── Twilio → ElevenLabs bridge ────────────────────────────────────────────────
+@app.post("/voice")
+def voice():
+    agent_id = os.getenv("ELEVENLABS_AGENT_ID", "")
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://api.elevenlabs.io/v1/convai/call?agent_id={agent_id}" />
+  </Connect>
+</Response>"""
+    from fastapi.responses import Response
+    return Response(content=twiml, media_type="application/xml")
 
