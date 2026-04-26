@@ -1,7 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { INITIAL_VEHICLES, BASE_STATIONS, distanceKm } from '../data/vehicles'
+import { API_URL, API_HEADERS } from './useIncidents'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
+
+function distanceKm(lat1, lng1, lat2, lng2) {
+  const R = 6371
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
 
 async function fetchRoute(fromLng, fromLat, toLng, toLat) {
   try {
@@ -13,12 +22,11 @@ async function fetchRoute(fromLng, fromLat, toLng, toLat) {
     const route = data.routes?.[0]
     if (!route) throw new Error('no route')
     return {
-      coords:    route.geometry.coordinates, // [[lng,lat], ...]
-      duration:  route.duration * 1000,       // real driving time in ms
+      coords:    route.geometry.coordinates,
+      duration:  route.duration * 1000,
       distanceM: route.distance,
     }
   } catch {
-    // Fallback: straight line at ~50 km/h
     const distKm = distanceKm(fromLat, fromLng, toLat, toLng)
     return {
       coords:    [[fromLng, fromLat], [toLng, toLat]],
@@ -28,14 +36,17 @@ async function fetchRoute(fromLng, fromLat, toLng, toLat) {
   }
 }
 
-// Returns stations of the given type sorted by proximity to (lat, lng)
-function nearestStationsForType(type, lat, lng) {
-  return BASE_STATIONS
-    .filter(s => s.type === type)
-    .sort((a, b) =>
-      distanceKm(a.lat, a.lng, lat, lng) -
-      distanceKm(b.lat, b.lng, lat, lng)
-    )
+// Backend lookup: nearest real-world station of a given type to the incident.
+async function fetchNearestStation(type, lat, lng) {
+  try {
+    const url = `${API_URL}/stations/nearest?lat=${lat}&lng=${lng}&type=${type}`
+    const res = await fetch(url, { headers: API_HEADERS })
+    if (!res.ok) return null
+    return await res.json()  // { type, name, address, lat, lng, distance_m, place_id }
+  } catch (e) {
+    console.error('[dispatch] nearest station fetch failed', type, e)
+    return null
+  }
 }
 
 function interpolateRoute(coords, t) {
@@ -48,17 +59,8 @@ function interpolateRoute(coords, t) {
 }
 
 export function useDispatch() {
-  const [vehicles, setVehicles]         = useState(INITIAL_VEHICLES)
   const [dispatches, setDispatches]     = useState({}) // incidentId → dispatch record
-  const [vehiclePositions, setPositions] = useState(() => {
-    const stationMap = Object.fromEntries(BASE_STATIONS.map(s => [s.id, s]))
-    return Object.fromEntries(
-      INITIAL_VEHICLES.map(v => {
-        const station = stationMap[v.stationId]
-        return [v.id, [station?.lng ?? v.lng, station?.lat ?? v.lat]]
-      })
-    )
-  })
+  const [vehiclePositions, setPositions] = useState({})
   const rafRef = useRef(null)
 
   // Animation loop — runs while any vehicle is en-route
@@ -79,7 +81,6 @@ export function useDispatch() {
           dispatch.assignments.forEach(a => {
             if (a.status !== 'en-route') return
             if (!a.route || !a.startTime) {
-              // Route still loading — hold vehicle at station origin
               if (a.originLng != null) newPositions[a.vehicleId] = [a.originLng, a.originLat]
               stillActive = true
               return
@@ -93,7 +94,6 @@ export function useDispatch() {
               a.arrivedAt = now
             }
           })
-          // Mark entire dispatch on-scene when all vehicles arrive
           if (dispatch.assignments.every(a => a.status === 'on-scene') &&
               dispatch.status !== 'on-scene') {
             dispatch.status = 'on-scene'
@@ -111,64 +111,54 @@ export function useDispatch() {
   }, [dispatches])
 
   const dispatch = useCallback(async (incident) => {
-    const needed = incident.required_responders || {}
+    if (incident.lat == null || incident.lng == null) {
+      console.warn('[dispatch] incident has no coords, skipping')
+      return
+    }
+
+    const needed = Object.entries(incident.required_responders || {})
+      .filter(([, count]) => count > 0)
+
+    // Look up the nearest real station for each required type, in parallel.
+    const stationsByType = {}
+    await Promise.all(needed.map(async ([type]) => {
+      const s = await fetchNearestStation(type, incident.lat, incident.lng)
+      if (s) stationsByType[type] = s
+    }))
+
+    // Build N synthetic vehicle assignments per required type, all originating
+    // from that type's nearest real station.
     const assignments = []
-
-    setVehicles(prev => {
-      const updated = [...prev]
-      const used    = new Set()
-
-      Object.entries(needed).forEach(([type, count]) => {
-        if (!count) return
-
-        // Work through stations nearest to the incident first
-        const stations = nearestStationsForType(type, incident.lat, incident.lng)
-        let remaining  = count
-
-        for (const station of stations) {
-          if (remaining <= 0) break
-          const fromStation = updated
-            .filter(v =>
-              v.type === type &&
-              v.status === 'idle' &&
-              !used.has(v.id) &&
-              v.stationId === station.id
-            )
-            .slice(0, remaining)
-
-          fromStation.forEach(v => {
-            used.add(v.id)
-            // Carry station coords so routing starts from the station
-            assignments.push({
-              vehicleId:  v.id,
-              type,
-              status:     'fetching',
-              originLat:  station.lat,
-              originLng:  station.lng,
-              stationName: station.name,
-            })
-            const idx = updated.findIndex(u => u.id === v.id)
-            updated[idx] = { ...updated[idx], status: 'en-route', incidentId: incident.id }
-            remaining--
-          })
-        }
-      })
-
-      return updated
+    let vid = 0
+    needed.forEach(([type, count]) => {
+      const station = stationsByType[type]
+      if (!station) {
+        console.warn(`[dispatch] no station for type '${type}', skipping`)
+        return
+      }
+      for (let i = 0; i < count; i++) {
+        assignments.push({
+          vehicleId:    `${incident.id}-${type}-${vid++}`,
+          type,
+          status:       'fetching',
+          originLat:    station.lat,
+          originLng:    station.lng,
+          stationName:  station.name,
+          stationAddress: station.address,
+          stationDistanceM: station.distance_m,
+        })
+      }
     })
 
-    // Add pending dispatch immediately so the panel appears
+    // Show pending dispatch immediately.
     setDispatches(prev => ({
       ...prev,
       [incident.id]: { incident, assignments, status: 'en-route', dispatchedAt: Date.now() },
     }))
 
-    // Fetch real routes (from station → incident) in parallel
+    // Fetch real driving routes (station → incident) in parallel.
     const routeResults = await Promise.all(
       assignments.map(async a => {
-        if (incident.lat == null) {
-          return { ...a, status: 'en-route', route: null, duration: 600_000 } // 10 min default
-        }
         const { coords, duration } = await fetchRoute(
           a.originLng, a.originLat, incident.lng, incident.lat
         )
@@ -184,17 +174,10 @@ export function useDispatch() {
         status: 'en-route',
       },
     }))
-  }, [vehicles])
+  }, [])
 
   const recallDispatch = useCallback((incidentId) => {
     setDispatches(prev => {
-      const d = prev[incidentId]
-      if (!d) return prev
-      setVehicles(v => v.map(veh =>
-        d.assignments.some(a => a.vehicleId === veh.id)
-          ? { ...veh, status: 'idle', incidentId: null }
-          : veh
-      ))
       const next = { ...prev }
       delete next[incidentId]
       return next
@@ -219,7 +202,7 @@ export function useDispatch() {
     type: 'FeatureCollection',
     features: Object.values(dispatches).flatMap(d =>
       d.assignments.map(a => {
-        const pos = vehiclePositions[a.vehicleId] || [0, 0]
+        const pos = vehiclePositions[a.vehicleId] || [a.originLng, a.originLat]
         return {
           type: 'Feature',
           geometry: { type: 'Point', coordinates: pos },
@@ -229,11 +212,30 @@ export function useDispatch() {
     ),
   }
 
+  // Unique stations from all active dispatches — for rendering on the map.
+  const stationGeoJSON = (() => {
+    const seen = new Set()
+    const features = []
+    Object.values(dispatches).forEach(d => {
+      d.assignments.forEach(a => {
+        const key = `${a.originLat},${a.originLng}`
+        if (seen.has(key)) return
+        seen.add(key)
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [a.originLng, a.originLat] },
+          properties: { name: a.stationName, type: a.type },
+        })
+      })
+    })
+    return { type: 'FeatureCollection', features }
+  })()
+
   return {
-    vehicles,
     dispatches,
     vehicleGeoJSON,
     routeGeoJSON,
+    stationGeoJSON,
     vehiclePositions,
     dispatch,
     recallDispatch,

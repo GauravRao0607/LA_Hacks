@@ -26,7 +26,9 @@ except ImportError:
 
 load_dotenv()
 
-import db  # noqa: E402  (must come after load_dotenv so db.init_pool sees SUPABASE_DB_URL)
+import db        # noqa: E402  (must come after load_dotenv so db.init_pool sees SUPABASE_DB_URL)
+import scoring   # noqa: E402
+import stations  # noqa: E402
 
 app = FastAPI(title="CrisisLine AI Backend")
 
@@ -152,27 +154,70 @@ def extract_elevenlabs_params(body: dict) -> dict:
     return body
 
 
-def extract_params_from_conversation_history(body: dict) -> dict | None:
+def _conversation_history_entries(body: dict) -> list[dict]:
     """
-    When the tool call 404s, ElevenLabs still sends a post_call_transcription
-    webhook containing the attempted tool params in system__conversation_history.
-    Pull them out so we don't lose the call.
+    Pull conversation entries out of a post_call_transcription body. ElevenLabs
+    sometimes puts them in custom_llm_extra_body.system__conversation_history
+    (older calls), and sometimes only in data.transcript (current). Try both.
     """
     try:
         data = body.get("data", {})
         client_data = data.get("conversation_initiation_client_data", {})
         extra = client_data.get("custom_llm_extra_body", {})
         history_raw = extra.get("system__conversation_history", "")
-        if not history_raw:
-            return None
-        entries = json.loads(history_raw).get("entries", [])
-        for entry in reversed(entries):
-            if entry.get("role") == "agent" and "tool_requests" in entry:
-                for req in entry["tool_requests"]:
-                    params = json.loads(req.get("params_as_json") or "{}")
-                    if params.get("location"):
-                        print(f"[history] recovered tool params: {params}")
-                        return params
+        if history_raw:
+            entries = json.loads(history_raw).get("entries", []) or []
+            if entries:
+                return entries
+        transcript = data.get("transcript")
+        if isinstance(transcript, list):
+            return transcript
+    except Exception as e:
+        print(f"[history] entries parse error: {e}")
+    return []
+
+
+def _tool_request_entries(entry: dict) -> list[dict]:
+    """Field name is 'tool_requests' in conversation_history, 'tool_calls' in transcript."""
+    return entry.get("tool_requests") or entry.get("tool_calls") or []
+
+
+def tool_call_already_succeeded(body: dict) -> bool:
+    """
+    Did the agent's tool call already fire successfully during this call?
+    If so, the live `/webhook/call` path already created/merged the incident
+    and the post_call_transcription is a duplicate — skip it.
+    """
+    for entry in _conversation_history_entries(body):
+        if entry.get("role") != "agent":
+            continue
+        for result in entry.get("tool_results", []) or []:
+            if result.get("is_error"):
+                continue
+            value = result.get("result_value") or ""
+            if isinstance(value, str) and '"id"' in value and '"call_ids"' in value:
+                return True
+    return False
+
+
+def extract_params_from_conversation_history(body: dict) -> dict | None:
+    """
+    When the live tool call failed (e.g. 404 from a misconfigured URL),
+    ElevenLabs still sends a post_call_transcription webhook containing the
+    attempted tool params. Pull them out so we don't lose the call.
+    """
+    try:
+        for entry in reversed(_conversation_history_entries(body)):
+            if entry.get("role") != "agent":
+                continue
+            for req in _tool_request_entries(entry):
+                raw = req.get("params_as_json") or "{}"
+                # In transcript-style entries this is a JSON string; in
+                # conversation_history-style it's already a dict in some cases.
+                params = raw if isinstance(raw, dict) else json.loads(raw)
+                if params.get("location"):
+                    print(f"[history] recovered tool params: {params}")
+                    return params
     except Exception as e:
         print(f"[history] extraction error: {e}")
     return None
@@ -192,143 +237,6 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
 
-
-# ── Per-call urgency (with non-linear interactions) ───────────────────────────
-def score_call(payload: CallPayload) -> tuple[int, str]:
-    score = 0
-    etype = payload.emergency_type.lower()
-    injuries = (payload.injuries or "").lower()
-    hazards = (payload.hazards or "").lower()
-    mobility = (payload.mobility or "").lower()
-    n = payload.num_people or 1
-
-    # ── Immediate life threat — auto Critical ─────────────────────────────────
-    INSTANT_CRITICAL = [
-        "dying", "going to die", "not breathing", "stopped breathing",
-        "no pulse", "unconscious", "unresponsive", "head", "decapitat",
-        "severed", "bleeding out", "can't breathe", "cannot breathe",
-        "heart attack", "cardiac arrest", "overdose", "drowning",
-        "on fire", "trapped in fire", "shooting", "shot", "stabbed",
-        "choking", "stroke", "seizure",
-        "multiple casualties", "mass casualty", "seven people injured",
-        "several people injured", "multiple injured", "all trapped"
-    ]
-    if any(k in injuries for k in INSTANT_CRITICAL) or \
-       any(k in etype for k in INSTANT_CRITICAL):
-        return 95, "Critical"
-
-    # ── Emergency type base score ─────────────────────────────────────────────
-    HIGH   = ["cardiac arrest", "fire", "structural collapse", "shooting", "stabbing",
-              "earthquake", "collapse", "trapped", "rescue", "crush"]
-    MEDIUM = ["flooding", "car accident", "medical", "injury"]
-
-    if any(e in etype for e in HIGH):
-        score += 40
-    elif any(e in etype for e in MEDIUM):
-        score += 25
-    else:
-        score += 5
-
-    # ── Injury severity ───────────────────────────────────────────────────────
-    SEVERE   = ["unconscious", "not breathing", "heavy bleeding", "severe bleeding",
-                "critical", "dying", "life threatening", "decapitat", "severed",
-                "bleeding out", "no pulse", "unresponsive",
-                "crush", "crushing", "debris", "buried", "pinned", "multiple injured",
-                "seven injured", "several injured", "multiple people injured"]
-    MODERATE = ["bleeding", "broken", "fracture", "head injury", "chest pain",
-                "difficulty breathing", "severe pain", "cut", "laceration"]
-
-    if any(k in injuries for k in SEVERE):
-        score += 40
-    elif any(k in injuries for k in MODERATE):
-        score += 20
-    elif injuries and injuries not in ("none", "no", "n/a", "unknown"):
-        score += 10
-
-    # ── Hazards ───────────────────────────────────────────────────────────────
-    CRITICAL_HAZARDS = ["fire spreading", "gas leak", "weapons", "rising water",
-                        "explosion", "armed", "gun", "knife", "power line"]
-    hazard_hits = sum(1 for h in CRITICAL_HAZARDS if h in hazards)
-    score += hazard_hits * 12
-    if hazards and hazards not in ("none", "no", "n/a") and hazard_hits == 0:
-        score += 5
-
-    # ── Mobility ──────────────────────────────────────────────────────────────
-    if any(k in mobility for k in ("trapped", "unable to move", "cannot move", "immobile", "stuck")):
-        score += 15
-
-    # ── Number of people ──────────────────────────────────────────────────────
-    if n >= 10:
-        score += 25
-    elif n >= 7:
-        score += 18
-    elif n >= 5:
-        score += 12
-    elif n >= 3:
-        score += 7
-    elif n >= 2:
-        score += 3
-
-    # ── Non-linear combos ─────────────────────────────────────────────────────
-    if "fire" in etype and n >= 3:
-        score = int(score * 1.3)
-    if any(k in mobility for k in ("trapped", "unable to move")) and hazard_hits > 0:
-        score += 15
-    if any(k in injuries for k in SEVERE) and n >= 2:
-        score += 10
-    if n >= 5 and any(k in mobility for k in ("trapped", "cannot move", "all trapped")):
-        score += 20
-
-    score = min(100, max(0, score))
-
-    if score >= 70:
-        tier = "Critical"
-    elif score >= 40:
-        tier = "Urgent"
-    else:
-        tier = "Standard"
-
-    return score, tier
-
-
-# ── Aggregate incident scoring ────────────────────────────────────────────────
-def score_incident(incident: dict) -> tuple[int, str]:
-    icalls = [calls[cid] for cid in incident["call_ids"] if cid in calls]
-    if not icalls:
-        return 0, "Standard"
-
-    severities = [c["call_score"] for c in icalls]
-    max_sev = max(severities)
-    avg_sev = sum(severities) / len(severities)
-    n = len(icalls)
-
-    unique_hazards: set[str] = set()
-    for c in icalls:
-        h = (c["hazards"] or "").lower()
-        for tok in CRITICAL_HAZARDS:
-            if tok in h:
-                unique_hazards.add(tok)
-
-    age_s = (datetime.utcnow() - datetime.fromisoformat(incident["created_at"])).total_seconds()
-    age_min = age_s / 60
-    time_bonus = min(TIME_DECAY_CAP, age_min * TIME_DECAY_SLOPE)
-
-    score = (
-        max_sev
-        + 0.3 * avg_sev
-        + 8 * math.log2(n + 1)
-        + 4 * len(unique_hazards)
-        + time_bonus
-    )
-    score = int(min(100, max(0, score)))
-
-    if score >= 75:
-        tier = "Critical"
-    elif score >= 40:
-        tier = "Urgent"
-    else:
-        tier = "Standard"
-    return score, tier
 
 
 # ── Resource allocation ───────────────────────────────────────────────────────
@@ -416,14 +324,6 @@ GOOGLE_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchT
 LA_CENTER = {"latitude": 34.0522, "longitude": -118.2437}
 LA_BIAS_RADIUS_M = 50_000  # Google caps locationBias circle radius at 50km
 
-CA_CENTER = {"latitude": 36.7783, "longitude": -119.4179}
-CA_BIAS_RADIUS_M = 400000  # covers all of California (for Mapbox only)
-# Google caps circle radius at 50km; use a rectangle for statewide CA bias instead
-CA_RECTANGLE = {
-    "low":  {"latitude": 32.5341, "longitude": -124.4096},
-    "high": {"latitude": 42.0126, "longitude": -114.1312},
-}
-
 
 async def _google_places_resolve(address: str) -> tuple[float | None, float | None, str | None]:
     """
@@ -453,7 +353,7 @@ async def _google_places_resolve(address: str) -> tuple[float | None, float | No
                     "regionCode":    "us",
                     "maxResultCount": 1,
                     "locationBias": {
-                        "rectangle": CA_RECTANGLE,
+                        "circle": {"center": LA_CENTER, "radius": LA_BIAS_RADIUS_M},
                     },
                 },
             )
@@ -494,8 +394,6 @@ async def _geocode_v6(addr: str, token: str) -> tuple[float | None, float | None
                     "access_token": token,
                     "types": "address,place,street",
                     "limit": 1,
-                    "proximity": "-119.4179,36.7783",
-                    "country": "us",
                 },
             )
             resp.raise_for_status()
@@ -522,8 +420,6 @@ async def _geocode_suggest(addr: str, token: str) -> tuple[float | None, float |
                     "session_token": session,
                     "types": "address,street",
                     "limit": 1,
-                    "country": "us",
-                    "proximity": "-119.4179,36.7783",
                 },
             )
             suggest.raise_for_status()
@@ -566,7 +462,7 @@ async def geocode(address: str) -> tuple[float | None, float | None]:
     # Strategy 3: strip house number and search just the street name
     stripped = re.sub(r'^\d+\s+', '', address).strip()
     if stripped != address:
-        lat, lng = await _geocode_v6(enrich_address(stripped), token)
+        lat, lng = await _geocode_v6(stripped, token)
         if lat is not None:
             return lat, lng
 
@@ -574,24 +470,12 @@ async def geocode(address: str) -> tuple[float | None, float | None]:
     corrected = await correct_address_with_claude(address)
     if corrected and corrected.lower() != address.lower():
         print(f"[geocode] Claude corrected '{address}' → '{corrected}'")
-        lat, lng = await _geocode_v6(enrich_address(corrected), token)
+        lat, lng = await _geocode_v6(corrected, token)
         if lat is not None:
             return lat, lng
 
     print(f"[geocode] all strategies failed for '{address}'")
     return None, None
-
-
-_CA_STATE_HINTS = ("ca", "california", " ca ", ",ca,")
-
-def enrich_address(address: str) -> str:
-    """Append California context if no state is already present."""
-    if not address:
-        return address
-    low = address.lower()
-    if any(h in low for h in _CA_STATE_HINTS):
-        return address
-    return address + ", California, USA"
 
 
 async def resolve_address(address: str) -> tuple[float | None, float | None, str | None]:
@@ -613,10 +497,10 @@ async def build_call(raw: dict, lat: float | None = None, lng: float | None = No
     normalized = normalize_payload(raw)
     payload = CallPayload(**normalized)
     if lat is None or lng is None:
-        lat, lng, canonical = await resolve_address(enrich_address(payload.location))
+        lat, lng, canonical = await resolve_address(payload.location)
         if canonical:
             payload.location = canonical  # show Google's exact address on the map
-    score, tier = score_call(payload)
+    score, tier = scoring.score_call(payload)
     return {
         "id":             str(uuid.uuid4()),
         "incident_id":    None,
@@ -676,20 +560,28 @@ def recompute_centroid(incident: dict) -> None:
 
 
 def update_incident_aggregates(incident: dict) -> None:
+    """Update everything except score/tier (Gemini owns those, set elsewhere)."""
     recompute_centroid(incident)
     icalls = [calls[cid] for cid in incident["call_ids"] if cid in calls]
     if icalls:
-        top = max(icalls, key=lambda c: c["call_score"])
-        incident["primary_emergency_type"] = top["emergency_type"]
-        incident["location_label"] = top["location"]
-    score, tier = score_incident(incident)
-    incident["score"] = score
-    incident["tier"] = tier
+        # Use the most recent call as the canonical face of the incident.
+        latest = max(icalls, key=lambda c: c.get("timestamp", ""))
+        incident["primary_emergency_type"] = latest["emergency_type"]
+        incident["location_label"] = latest["location"]
     incident["required_responders"] = required_responders(incident)
     incident["updated_at"] = datetime.utcnow().isoformat()
 
 
-def create_incident_for_call(call: dict) -> dict:
+async def _score_with_gemini_and_persist(incident: dict) -> None:
+    """Synchronous-style scoring helper used by mutation paths."""
+    icalls = [calls[cid] for cid in incident["call_ids"] if cid in calls]
+    score, tier = await scoring.score_incident_with_gemini(incident, icalls)
+    incident["score"] = score
+    incident["tier"] = tier
+    incident["updated_at"] = datetime.utcnow().isoformat()
+
+
+async def create_incident_for_call(call: dict) -> dict:
     iid = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
     incident = {
@@ -700,8 +592,8 @@ def create_incident_for_call(call: dict) -> dict:
         "centroid_lng":           call["lng"],
         "primary_emergency_type": call["emergency_type"],
         "location_label":         call["location"],
-        "score":                  0,
-        "tier":                   "Standard",
+        "score":                  50,           # placeholder until Gemini responds
+        "tier":                   "Urgent",     # safe default
         "required_responders":    {},
         "created_at":             now,
         "updated_at":             now,
@@ -710,16 +602,18 @@ def create_incident_for_call(call: dict) -> dict:
     incidents[iid] = incident
     call["incident_id"] = iid
     update_incident_aggregates(incident)
+    await _score_with_gemini_and_persist(incident)
     asyncio.create_task(db.save_call(call))
     asyncio.create_task(db.save_incident(incident))
     return incident
 
 
-def merge_call_into_incident(call: dict, incident_id: str) -> dict:
+async def merge_call_into_incident(call: dict, incident_id: str) -> dict:
     incident = incidents[incident_id]
     incident["call_ids"].append(call["id"])
     call["incident_id"] = incident_id
     update_incident_aggregates(incident)
+    await _score_with_gemini_and_persist(incident)
     asyncio.create_task(db.save_call(call))
     asyncio.create_task(db.save_incident(incident))
     return incident
@@ -746,9 +640,13 @@ def health_check():
 async def receive_call(request: Request):
     body = await request.json()
 
-    # post_call_transcription = tool call failed (404 on our end).
-    # Recover the params ElevenLabs already extracted from the conversation.
+    # post_call_transcription = end-of-call summary. ElevenLabs sends it
+    # whether the tool fired or not, so we have to dedupe against the live
+    # tool call that already created an incident.
     if body.get("type") == "post_call_transcription":
+        if tool_call_already_succeeded(body):
+            print("[receive_call] tool already fired during call — skipping post_call duplicate")
+            return {"detail": "tool already fired, no action"}
         params = extract_params_from_conversation_history(body)
         if not params:
             transcript_raw = (body.get("data") or {}).get("transcript", "")
@@ -764,9 +662,9 @@ async def receive_call(request: Request):
 
     match = find_matching_incident(call)
     if match:
-        incident = merge_call_into_incident(call, match)
+        incident = await merge_call_into_incident(call, match)
     else:
-        incident = create_incident_for_call(call)
+        incident = await create_incident_for_call(call)
     return serialize_incident(incident)
 
 
@@ -788,9 +686,9 @@ async def call_end(request: Request):
             calls[call["id"]] = call
             match = find_matching_incident(call)
             if match:
-                incident = merge_call_into_incident(call, match)
+                incident = await merge_call_into_incident(call, match)
             else:
-                incident = create_incident_for_call(call)
+                incident = await create_incident_for_call(call)
             print(f"[call-end] fallback processed → incident {incident['id']}")
             return {"detail": "fallback processed", "incident": serialize_incident(incident)}
         print("[call-end] no location found in transcript, skipping")
@@ -991,16 +889,11 @@ async def resolve_incident(incident_id: str):
     return {"detail": f"Incident {incident_id} resolved."}
 
 
-# ── Twilio → ElevenLabs bridge ────────────────────────────────────────────────
-@app.post("/voice")
-def voice():
-    agent_id = os.getenv("ELEVENLABS_AGENT_ID", "")
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="wss://api.elevenlabs.io/v1/convai/call?agent_id={agent_id}" />
-  </Connect>
-</Response>"""
-    from fastapi.responses import Response
-    return Response(content=twiml, media_type="application/xml")
+@app.get("/stations/nearest")
+async def nearest_station(lat: float, lng: float, type: str):
+    """Closest dispatchable station of `type` (fire | ems | police | rescue) to (lat,lng)."""
+    station = await stations.find_nearest_station(lat, lng, type)
+    if station is None:
+        raise HTTPException(status_code=404, detail=f"no '{type}' station found near ({lat},{lng})")
+    return station
 

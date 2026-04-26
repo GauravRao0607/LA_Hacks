@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import { TIER_COLORS } from '../data/constants'
-import { VEHICLE_CONFIG, BASE_STATIONS } from '../data/vehicles'
+import { VEHICLE_CONFIG } from '../data/vehicles'
 import '../styles/Map.css'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
@@ -28,13 +28,20 @@ function toIncidentFC(incidents) {
   }
 }
 
-const stationFC = {
-  type: 'FeatureCollection',
-  features: BASE_STATIONS.map(s => ({
-    type: 'Feature',
-    geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
-    properties: { id: s.id, name: s.name, type: s.type, color: VEHICLE_CONFIG[s.type].color },
-  })),
+// Dispatched-station GeoJSON now comes from useDispatch live; we colour each
+// station marker by responder type via the same VEHICLE_CONFIG palette.
+function colourStationFC(fc) {
+  if (!fc?.features) return EMPTY_FC
+  return {
+    type: 'FeatureCollection',
+    features: fc.features.map(f => ({
+      ...f,
+      properties: {
+        ...f.properties,
+        color: VEHICLE_CONFIG[f.properties.type]?.color || '#888',
+      },
+    })),
+  }
 }
 
 export default function ThreatMap({
@@ -43,6 +50,7 @@ export default function ThreatMap({
   onSelectIncident,
   vehicleGeoJSON = EMPTY_FC,
   routeGeoJSON   = EMPTY_FC,
+  stationGeoJSON = EMPTY_FC,
 }) {
   const containerRef  = useRef()
   const mapRef        = useRef()
@@ -106,8 +114,8 @@ export default function ThreatMap({
         },
       })
 
-      // ── Base stations ──────────────────────────────────────────────────────
-      map.addSource('stations', { type: 'geojson', data: stationFC })
+      // ── Dispatched stations (live) ─────────────────────────────────────────
+      map.addSource('stations', { type: 'geojson', data: colourStationFC(stationGeoJSON) })
       map.addLayer({ id: 'stations-ring', type: 'circle', source: 'stations', paint: {
         'circle-radius':  6,
         'circle-color':   ['get', 'color'],
@@ -196,6 +204,13 @@ export default function ThreatMap({
     if (!map?.isStyleLoaded()) return
     map.getSource('routes')?.setData(routeGeoJSON)
   }, [routeGeoJSON])
+
+  // ── Live dispatched stations ──────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map?.isStyleLoaded()) return
+    map.getSource('stations')?.setData(colourStationFC(stationGeoJSON))
+  }, [stationGeoJSON])
 
   // ── Selected incident highlight ───────────────────────────────────────────
   useEffect(() => {

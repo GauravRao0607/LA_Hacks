@@ -45,6 +45,7 @@
       "Bash(/Users/anshsinghal/Desktop/LA_Hacks_frontend/start.sh *)",
       "WebSearch",
       "WebFetch(domain:www.mlh.com)",
+      "Bash(lsof -i :8001,5180,4040 -sTCP:LISTEN)",
       "Read(//private/tmp/lah-logs/**)",
       "WebFetch(domain:developers.google.com)",
       "Bash(awk '/POST \\\\/webhook\\\\/call$/{print NR\": \"$0; for\\(i=1;i<=15;i++\\){getline line; print NR-i+1+15\": \"line}}' /tmp/lah-logs/backend.log)",
@@ -55,19 +56,19 @@
       "Bash(lsof -i :8001 -sTCP:LISTEN -t)",
       "Bash(lsof -i :8001 -sTCP:LISTEN)",
       "Bash(kill -9 67462)",
-      "Bash(brew list *)",
-      "Read(//usr/local/bin/**)",
-      "Bash(chmod +x *)",
-      "Bash(./start.sh)",
-      "Bash(./stop.sh)",
+      "Bash(git fetch *)",
       "Bash(git pull *)",
       "Bash(git stash *)",
-      "Bash(pkill -f ngrok)",
-      "Read(//private/tmp/**)",
-      "Bash(nohup ngrok *)",
-      "Bash(echo \"ngrok PID: $!\")",
-      "Bash(pkill ngrok *)",
-      "Bash(ngrok http *)"
+      "Bash(awk 'NR<197 || NR>451' /Users/anshsinghal/Desktop/LA_Hacks_frontend/backend/main.py)",
+      "Bash(pkill -f vite)",
+      "Bash(grep -B 0 -A 12 \"POST /webhook/call$\" /tmp/lah-logs/backend.log)",
+      "Bash(awk '/POST \\\\/webhook\\\\/call$/{found=NR} found && NR<=found+15 {print}' /tmp/lah-logs/backend.log)",
+      "Bash(awk 'NR>=2147 && /\\\\[google\\\\]/{exit} NR>=2147' /tmp/lah-logs/backend.log)",
+      "Bash(awk 'NR>=3340 && NR<=3346' /tmp/lah-logs/backend.log)",
+      "Bash(/Users/anshsinghal/Desktop/LA_Hacks_frontend/stop.sh)",
+      "Bash(git checkout *)",
+      "Bash(pkill -f \"vite --port 5180\")",
+      "Bash(nohup npm *)"
     ]
   }
 }
