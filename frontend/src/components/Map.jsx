@@ -67,14 +67,24 @@ function toIncidentFC(incidents) {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [inc.lng, inc.lat] },
         properties: {
-          id:      inc.id,
-          tier:    inc.tier,
-          color:   TIER_COLORS[inc.tier],
-          opacity: TIER_OPACITY[inc.tier],
+          id:         inc.id,
+          tier:       inc.tier,
+          color:      TIER_COLORS[inc.tier],
+          opacity:    TIER_OPACITY[inc.tier],
+          call_count: inc.call_count || 1,
         },
       })),
   }
 }
+
+// Returns an icon-size expression that scales by zoom AND call_count.
+// Must be structured as zoom-interpolation with data expressions as stop values.
+const countScaledSize = (s1, s2, s3) => [
+  'interpolate', ['linear'], ['zoom'],
+  4,  ['*', s1, ['interpolate', ['linear'], ['get', 'call_count'], 1, 1.0, 3, 1.3, 7, 1.65, 15, 2.1]],
+  8,  ['*', s2, ['interpolate', ['linear'], ['get', 'call_count'], 1, 1.0, 3, 1.3, 7, 1.65, 15, 2.1]],
+  12, ['*', s3, ['interpolate', ['linear'], ['get', 'call_count'], 1, 1.0, 3, 1.3, 7, 1.65, 15, 2.1]],
+]
 
 // Dispatched-station GeoJSON now comes from useDispatch live; we colour each
 // station marker by responder type via the same VEHICLE_CONFIG palette.
@@ -151,7 +161,7 @@ export default function ThreatMap({
       }})
       map.addLayer({ id: 'incidents-pins', type: 'symbol', source: 'incidents', layout: {
         'icon-image':         ['concat', 'pin-', ['get', 'tier']],
-        'icon-size':          ['interpolate', ['linear'], ['zoom'], 4, 0.7, 8, 1.0, 12, 1.3],
+        'icon-size':          countScaledSize(0.7, 1.0, 1.3),
         'icon-allow-overlap': true,
         'icon-anchor':        'bottom',
       }})
@@ -271,16 +281,16 @@ export default function ThreatMap({
   useEffect(() => {
     const map = mapRef.current
     if (!map?.isStyleLoaded()) return
+    const countExpr = ['interpolate', ['linear'], ['get', 'call_count'], 1, 1.0, 3, 1.3, 7, 1.65, 15, 2.1]
     if (selectedId) {
       map.setLayoutProperty('incidents-pins', 'icon-size', [
         'interpolate', ['linear'], ['zoom'],
-        4,  ['case', ['==', ['get', 'id'], selectedId], 1.0, 0.7],
-        8,  ['case', ['==', ['get', 'id'], selectedId], 1.35, 1.0],
-        12, ['case', ['==', ['get', 'id'], selectedId], 1.7, 1.3],
+        4,  ['*', ['case', ['==', ['get', 'id'], selectedId], 1.0,  0.7], countExpr],
+        8,  ['*', ['case', ['==', ['get', 'id'], selectedId], 1.35, 1.0], countExpr],
+        12, ['*', ['case', ['==', ['get', 'id'], selectedId], 1.7,  1.3], countExpr],
       ])
     } else {
-      map.setLayoutProperty('incidents-pins', 'icon-size',
-        ['interpolate', ['linear'], ['zoom'], 4, 0.7, 8, 1.0, 12, 1.3])
+      map.setLayoutProperty('incidents-pins', 'icon-size', countScaledSize(0.7, 1.0, 1.3))
     }
   }, [selectedId])
 
