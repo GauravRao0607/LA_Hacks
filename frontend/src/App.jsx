@@ -19,6 +19,7 @@ export default function App() {
 
   const handleSelect      = useCallback(inc => setSelectedId(prev => prev === inc.id ? null : inc.id), [])
   const handleClose       = useCallback(() => setSelectedId(null), [])
+  const handleResolve     = useCallback((incidentId) => { recallDispatch(incidentId); setSelectedId(null) }, [recallDispatch])
   const handleGraphToggle = useCallback(() => setShowGraph(v => !v), [])
   const handleGraphClose  = useCallback(() => setShowGraph(false), [])
 
@@ -60,6 +61,7 @@ export default function App() {
         <IncidentDetail
           incident={selectedIncident}
           onClose={handleClose}
+          onResolve={handleResolve}
           onDispatch={dispatch}
           dispatched={!!dispatches[selectedIncident.id]}
         />

@@ -30,7 +30,7 @@ const TYPE_ICONS = {
   Infrastructure: Zap,
 }
 
-export default function IncidentDetail({ incident, onClose, onDispatch, dispatched }) {
+export default function IncidentDetail({ incident, onClose, onResolve, onDispatch, dispatched }) {
   const [, setTick] = useState(0)
   useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000)
@@ -48,7 +48,7 @@ export default function IncidentDetail({ incident, onClose, onDispatch, dispatch
         method: 'DELETE',
         headers: API_HEADERS,
       })
-      onClose()
+      ;(onResolve ?? onClose)(incident.id)
     } catch (e) {
       console.error('Resolve failed', e)
     }

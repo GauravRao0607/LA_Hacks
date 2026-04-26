@@ -59,9 +59,15 @@ function interpolateRoute(coords, t) {
 }
 
 export function useDispatch(selectedIncidentId = null) {
-  const [dispatches, setDispatches]     = useState({}) // incidentId → dispatch record
+  const [dispatches, setDispatches]      = useState({})
   const [vehiclePositions, setPositions] = useState({})
+  const [availableVehicles, setAvailable] = useState([]) // freed vehicles with last-known position
+  const availableRef       = useRef([])
+  const vehiclePositionsRef = useRef({})
   const rafRef = useRef(null)
+
+  useEffect(() => { availableRef.current       = availableVehicles }, [availableVehicles])
+  useEffect(() => { vehiclePositionsRef.current = vehiclePositions }, [vehiclePositions])
 
   // When an incident is selected, narrow the map's vehicles / routes /
   // stations to that incident only. With nothing selected, show everything.
@@ -91,9 +97,16 @@ export function useDispatch(selectedIncidentId = null) {
               stillActive = true
               return
             }
-            const t = Math.min((now - a.startTime) / a.duration, 1)
-            newPositions[a.vehicleId] = interpolateRoute(a.route, t)
-            if (t < 1) {
+            const t = (now - a.startTime) / a.duration
+            if (t < 0) {
+              // Vehicle hasn't departed yet — hold at origin
+              newPositions[a.vehicleId] = [a.originLng, a.originLat]
+              stillActive = true
+              return
+            }
+            const tClamped = Math.min(t, 1)
+            newPositions[a.vehicleId] = interpolateRoute(a.route, tClamped)
+            if (tClamped < 1) {
               stillActive = true
             } else if (a.status !== 'on-scene') {
               a.status    = 'on-scene'
@@ -132,29 +145,61 @@ export function useDispatch(selectedIncidentId = null) {
       if (s) stationsByType[type] = s
     }))
 
-    // Build N synthetic vehicle assignments per required type, all originating
-    // from that type's nearest real station.
+    // Build assignments — prefer available redeployed vehicles when closer than the station.
     const assignments = []
+    const claimedIds  = new Set()
     let vid = 0
+
     needed.forEach(([type, count]) => {
-      const station = stationsByType[type]
-      if (!station) {
-        console.warn(`[dispatch] no station for type '${type}', skipping`)
-        return
-      }
+      const station     = stationsByType[type]
+      const stationDist = station
+        ? distanceKm(station.lat, station.lng, incident.lat, incident.lng)
+        : Infinity
+
       for (let i = 0; i < count; i++) {
-        assignments.push({
-          vehicleId:    `${incident.id}-${type}-${vid++}`,
-          type,
-          status:       'fetching',
-          originLat:    station.lat,
-          originLng:    station.lng,
-          stationName:  station.name,
-          stationAddress: station.address,
-          stationDistanceM: station.distance_m,
-        })
+        // Find closest unclaimed available vehicle of this type
+        let best = null, bestDist = Infinity
+        for (const v of availableRef.current) {
+          if (v.type !== type || claimedIds.has(v.vehicleId)) continue
+          const d = distanceKm(v.lat, v.lng, incident.lat, incident.lng)
+          if (d < bestDist) { bestDist = d; best = v }
+        }
+
+        if (best) {
+          // Always prefer a vehicle already in the field over spawning a new one
+          claimedIds.add(best.vehicleId)
+          assignments.push({
+            vehicleId:        best.vehicleId,
+            type,
+            status:           'fetching',
+            originLat:        best.lat,
+            originLng:        best.lng,
+            stationName:      'Redeployed unit',
+            stationAddress:   '',
+            stationDistanceM: Math.round(bestDist * 1000),
+            redeployed:       true,
+          })
+        } else if (station) {
+          // No available unit — spawn fresh from the nearest station
+          assignments.push({
+            vehicleId:        `${incident.id}-${type}-${vid++}`,
+            type,
+            status:           'fetching',
+            originLat:        station.lat,
+            originLng:        station.lng,
+            stationName:      station.name,
+            stationAddress:   station.address,
+            stationDistanceM: station.distance_m,
+          })
+        } else {
+          console.warn(`[dispatch] no source for type '${type}' unit ${i + 1}, skipping`)
+        }
       }
     })
+
+    // Remove claimed vehicles from the available pool
+    if (claimedIds.size > 0)
+      setAvailable(v => v.filter(av => !claimedIds.has(av.vehicleId)))
 
     // Show pending dispatch immediately.
     setDispatches(prev => ({
@@ -163,12 +208,14 @@ export function useDispatch(selectedIncidentId = null) {
     }))
 
     // Fetch real driving routes (station → incident) in parallel.
+    // Stagger startTime by 3s per vehicle so same-route units don't overlap as one dot.
+    const routeBase = Date.now()
     const routeResults = await Promise.all(
-      assignments.map(async a => {
+      assignments.map(async (a, i) => {
         const { coords, duration } = await fetchRoute(
           a.originLng, a.originLat, incident.lng, incident.lat
         )
-        return { ...a, status: 'en-route', route: coords, duration, startTime: Date.now() }
+        return { ...a, status: 'en-route', route: coords, duration, startTime: routeBase + i * 3000 }
       })
     )
 
@@ -184,6 +231,19 @@ export function useDispatch(selectedIncidentId = null) {
 
   const recallDispatch = useCallback((incidentId) => {
     setDispatches(prev => {
+      const d = prev[incidentId]
+      if (d) {
+        const freed = d.assignments.map(a => {
+          const pos = vehiclePositionsRef.current[a.vehicleId]
+          return {
+            vehicleId: a.vehicleId,
+            type:      a.type,
+            lat:       pos ? pos[1] : a.originLat,
+            lng:       pos ? pos[0] : a.originLng,
+          }
+        })
+        setAvailable(v => [...v, ...freed])
+      }
       const next = { ...prev }
       delete next[incidentId]
       return next
@@ -206,16 +266,25 @@ export function useDispatch(selectedIncidentId = null) {
 
   const vehicleGeoJSON = {
     type: 'FeatureCollection',
-    features: Object.values(visibleDispatches).flatMap(d =>
-      d.assignments.map(a => {
-        const pos = vehiclePositions[a.vehicleId] || [a.originLng, a.originLat]
-        return {
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: pos },
-          properties: { vehicleId: a.vehicleId, type: a.type, status: a.status },
-        }
-      })
-    ),
+    features: [
+      // Active / en-route / on-scene vehicles (filtered by selected incident)
+      ...Object.values(visibleDispatches).flatMap(d =>
+        d.assignments.map(a => {
+          const pos = vehiclePositions[a.vehicleId] || [a.originLng, a.originLat]
+          return {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: pos },
+            properties: { vehicleId: a.vehicleId, type: a.type, status: a.status },
+          }
+        })
+      ),
+      // Available (freed) vehicles — always visible so they don't disappear on resolve
+      ...availableVehicles.map(v => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [v.lng, v.lat] },
+        properties: { vehicleId: v.vehicleId, type: v.type, status: 'available' },
+      })),
+    ],
   }
 
   // Unique stations from all active dispatches — for rendering on the map.

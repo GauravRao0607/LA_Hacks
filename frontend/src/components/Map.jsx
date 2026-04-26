@@ -10,6 +10,37 @@ const TIER_OPACITY = { Critical: 1.0, Urgent: 0.9, Standard: 0.8 }
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
+const VEHICLE_COLORS = { fire: '#ef4444', ems: '#f1f5f9', police: '#2563eb' }
+
+function makeCarImage(bodyColor) {
+  const W = 20, H = 32
+  const canvas = document.createElement('canvas')
+  canvas.width = W; canvas.height = H
+  const ctx = canvas.getContext('2d')
+  const rr = (x, y, w, h, r) => {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + w, y,     x + w, y + h, r)
+    ctx.arcTo(x + w, y + h, x,     y + h, r)
+    ctx.arcTo(x,     y + h, x,     y,     r)
+    ctx.arcTo(x,     y,     x + w, y,     r)
+    ctx.closePath()
+  }
+  // Body
+  rr(2, 1, W - 4, H - 2, 4)
+  ctx.fillStyle = bodyColor; ctx.fill()
+  ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.lineWidth = 0.8; ctx.stroke()
+  // Windshields
+  rr(4, 5, W - 8, 7, 2)
+  ctx.fillStyle = 'rgba(147,197,253,0.78)'; ctx.fill()
+  rr(4, H - 12, W - 8, 6, 2)
+  ctx.fillStyle = 'rgba(147,197,253,0.55)'; ctx.fill()
+  // Wheels
+  ctx.fillStyle = '#18181b'
+  ;[[0, 5], [W - 3, 5], [0, H - 10], [W - 3, H - 10]].forEach(([x, y]) => { rr(x, y, 3, 6, 1); ctx.fill() })
+  return { width: W, height: H, data: new Uint8Array(ctx.getImageData(0, 0, W, H).data.buffer) }
+}
+
 function makePinImage(color) {
   const W = 28, H = 38
   const canvas = document.createElement('canvas')
@@ -102,6 +133,9 @@ export default function ThreatMap({
       Object.entries(TIER_COLORS).forEach(([tier, color]) => {
         map.addImage(`pin-${tier}`, makePinImage(color))
       })
+      Object.entries(VEHICLE_COLORS).forEach(([type, color]) => {
+        map.addImage(`car-${type}`, makeCarImage(color))
+      })
 
       // ── Incidents ──────────────────────────────────────────────────────────
       map.addSource('incidents', { type: 'geojson', data: toIncidentFC(incidentsRef.current) })
@@ -148,10 +182,10 @@ export default function ThreatMap({
       map.addSource('routes', { type: 'geojson', data: EMPTY_FC })
       map.addLayer({ id: 'routes-line', type: 'line', source: 'routes', paint: {
         'line-color':   ['case',
-          ['==', ['get', 'type'], 'fire'],   '#f97316',
-          ['==', ['get', 'type'], 'ems'],    '#34d399',
-          ['==', ['get', 'type'], 'police'], '#60a5fa',
-          '#a78bfa',
+          ['==', ['get', 'type'], 'fire'],   '#ef4444',
+          ['==', ['get', 'type'], 'ems'],    '#f1f5f9',
+          ['==', ['get', 'type'], 'police'], '#2563eb',
+          '#888888',
         ],
         'line-width':   2,
         'line-opacity': 0.55,
@@ -160,29 +194,31 @@ export default function ThreatMap({
 
       // ── Vehicles ───────────────────────────────────────────────────────────
       map.addSource('vehicles', { type: 'geojson', data: EMPTY_FC })
-      map.addLayer({ id: 'vehicles-halo', type: 'circle', source: 'vehicles', paint: {
-        'circle-radius': 14,
-        'circle-color':  ['case',
-          ['==', ['get', 'type'], 'fire'],   '#f97316',
-          ['==', ['get', 'type'], 'ems'],    '#34d399',
-          ['==', ['get', 'type'], 'police'], '#60a5fa',
-          '#a78bfa',
-        ],
-        'circle-opacity': 0.18,
-        'circle-blur':    1,
-      }})
+      map.addLayer({ id: 'vehicles-halo', type: 'circle', source: 'vehicles',
+        filter: ['!=', ['get', 'status'], 'available'],
+        paint: {
+          'circle-radius': 14,
+          'circle-color':  ['case',
+            ['==', ['get', 'type'], 'fire'],   '#f97316',
+            ['==', ['get', 'type'], 'ems'],    '#34d399',
+            ['==', ['get', 'type'], 'police'], '#60a5fa',
+            '#a78bfa',
+          ],
+          'circle-opacity': 0.18,
+          'circle-blur':    1,
+        }})
       map.addLayer({ id: 'vehicles-dot', type: 'circle', source: 'vehicles', paint: {
-        'circle-radius': 6,
+        'circle-radius': ['case', ['==', ['get', 'status'], 'available'], 4, 6],
         'circle-color':  ['case',
-          ['==', ['get', 'type'], 'fire'],   '#f97316',
-          ['==', ['get', 'type'], 'ems'],    '#34d399',
-          ['==', ['get', 'type'], 'police'], '#60a5fa',
-          '#a78bfa',
+          ['==', ['get', 'type'], 'fire'],   '#ef4444',
+          ['==', ['get', 'type'], 'ems'],    '#f1f5f9',
+          ['==', ['get', 'type'], 'police'], '#2563eb',
+          '#888888',
         ],
-        'circle-opacity': 1,
+        'circle-opacity': ['case', ['==', ['get', 'status'], 'available'], 0.4, 1],
         'circle-stroke-width':  1.5,
         'circle-stroke-color':  '#ffffff',
-        'circle-stroke-opacity': 0.9,
+        'circle-stroke-opacity': ['case', ['==', ['get', 'status'], 'available'], 0.3, 0.9],
       }})
 
       // ── Interaction ────────────────────────────────────────────────────────

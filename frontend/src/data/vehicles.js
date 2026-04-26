@@ -1,7 +1,7 @@
 export const VEHICLE_CONFIG = {
-  fire:   { color: '#f97316', label: 'F', name: 'Fire Truck',  bgColor: '#7c2d12' },
-  ems:    { color: '#34d399', label: 'A', name: 'Ambulance',   bgColor: '#064e3b' },
-  police: { color: '#60a5fa', label: 'P', name: 'Police Unit', bgColor: '#1e3a5f' },
+  fire:   { color: '#ef4444', label: 'F', name: 'Fire Truck',  bgColor: '#7f1d1d' },
+  ems:    { color: '#f1f5f9', label: 'A', name: 'Ambulance',   bgColor: '#0f172a' },
+  police: { color: '#2563eb', label: 'P', name: 'Police Unit', bgColor: '#1e1b4b' },
 }
 
 export const BASE_STATIONS = [
